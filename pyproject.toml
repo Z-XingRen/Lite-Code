@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lite"
+version = "0.3.0"
+description = "Small local coding agent for OpenAI-compatible, Anthropic-compatible, and DeepSeek models"
+requires-python = ">=3.10"
+dependencies = [
+  "pydantic>=2.0.0",
+  "textual>=0.86.0",
+  "tomli>=2.0.0; python_version < '3.11'",
+]
+
+[project.scripts]
+lite = "lite.cli:main"
+lite-tui = "lite.tui.main:main"
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3.5",
+  "pytest-asyncio>=0.23.0",
+  "ruff>=0.4.4",
+]
+
+[tool.setuptools.packages.find]
+include = ["lite*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = [
+  ".git",
+  ".lite",
+  ".venv",
+  ".worktrees",
+  "_local",
+  "artifacts",
+  "build",
+  "dist",
+  "examples",
+  "fixtures",
+]

@@ -1,0 +1,38 @@
+provider = "deepseek"
+
+# Keep API keys in .env, for example OPENAI_API_KEY or ANTHROPIC_API_KEY.
+
+[providers.openai]
+protocol = "openai"
+base_url = "https://www.right.codes/codex/v1"
+model = "gpt-5.4"
+models = ["gpt-5.4"]
+reasoning_effort = "medium"
+reasoning_efforts = ["none", "low", "medium", "high", "xhigh", "max"]
+strict_tools = false
+
+[providers.anthropic]
+protocol = "anthropic"
+base_url = "https://www.right.codes/claude/v1"
+model = "claude-sonnet-4-6"
+models = ["claude-sonnet-4-6"]
+reasoning_effort = "high"
+reasoning_efforts = ["low", "medium", "high", "max"]
+strict_tools = false
+
+[providers.deepseek]
+protocol = "anthropic"
+base_url = "https://api.deepseek.com/anthropic"
+model = "deepseek-v4-pro"
+strict_tools = false
+
+[sandbox]
+mode = "off"
+backend = "auto"
+workspace_write = true
+excluded_commands = []
+
+[sandbox.filesystem]
+extra_readonly_paths = []
+deny_read = []
+deny_write = []
