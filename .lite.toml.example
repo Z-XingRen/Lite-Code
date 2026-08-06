@@ -4,7 +4,7 @@ provider = "deepseek"
 
 [providers.openai]
 protocol = "openai"
-base_url = "https://www.right.codes/codex/v1"
+base_url = "https://api.openai.com/v1"
 model = "gpt-5.4"
 models = ["gpt-5.4"]
 reasoning_effort = "medium"
@@ -13,7 +13,7 @@ strict_tools = false
 
 [providers.anthropic]
 protocol = "anthropic"
-base_url = "https://www.right.codes/claude/v1"
+base_url = "https://api.anthropic.com"
 model = "claude-sonnet-4-6"
 models = ["claude-sonnet-4-6"]
 reasoning_effort = "high"
