@@ -1,0 +1,2 @@
+- [x] Validate input
+- [ ] Implement stable priority ordering

@@ -1,0 +1,683 @@
+{
+  "schema_version": 1,
+  "benchmark_id": "lite-coding-quality-v1",
+  "description": "24-task fresh-fixture benchmark for Lite Runtime; SCC requires target, regression, scope, finalization, budget, and safety gates.",
+  "tasks": [
+    {
+      "id": "F01_pricing",
+      "category": "failing-test-diagnosis",
+      "prompt": "Fix the pricing bug in src/pricing.py. Discount must be subtracted before tax, negative inputs must raise ValueError, and the existing tests must still pass. Do not change tests or unrelated files.",
+      "follow_up_prompt": "",
+      "fixture_repo": "benchmarks/formal_v1/fixtures/F01_pricing",
+      "allowed_tools": [
+        "list_files",
+        "read_file",
+        "search",
+        "patch_file",
+        "write_file",
+        "run_shell"
+      ],
+      "step_budget": 7,
+      "wall_timeout": 240,
+      "expected_changed_paths": [
+        "src/pricing.py"
+      ],
+      "reference_files": {
+        "src/pricing.py": "def calculate_total(subtotal, discount, tax):\n    if subtotal < 0 or discount < 0 or tax < 0:\n        raise ValueError(\"amounts must be non-negative\")\n    return round(subtotal - discount + tax, 2)\n"
+      },
+      "required_trace_events": [],
+      "multi_agent": false,
+      "grader": "F01_pricing"
+    },
+    {
+      "id": "F02_retry",
+      "category": "failing-test-diagnosis",
+      "prompt": "Repair src/retry.py so execute_with_retry invokes the action at most max_attempts times, retries after failures, returns the first success, and re-raises the final exception. Keep tests unchanged.",
+      "follow_up_prompt": "",
+      "fixture_repo": "benchmarks/formal_v1/fixtures/F02_retry",
+      "allowed_tools": [
+        "list_files",
+        "read_file",
+        "search",
+        "patch_file",
+        "write_file",
+        "run_shell"
+      ],
+      "step_budget": 8,
+      "wall_timeout": 240,
+      "expected_changed_paths": [
+        "src/retry.py"
+      ],
+      "reference_files": {
+        "src/retry.py": "def execute_with_retry(action, max_attempts):\n    if max_attempts < 1:\n        raise ValueError(\"max_attempts must be positive\")\n    last = None\n    for _ in range(max_attempts):\n        try:\n            return action()\n        except Exception as exc:\n            last = exc\n    raise last\n"
+      },
+      "required_trace_events": [],
+      "multi_agent": false,
+      "grader": "F02_retry"
+    },
+    {
+      "id": "F03_parser",
+      "category": "failing-test-diagnosis",
+      "prompt": "Fix parse_env_lines in src/config_parser.py. Ignore blank lines and # comments, split only on the first '=', trim whitespace, and keep values containing '='. Do not edit tests.",
+      "follow_up_prompt": "",
+      "fixture_repo": "benchmarks/formal_v1/fixtures/F03_parser",
+      "allowed_tools": [
+        "list_files",
+        "read_file",
+        "search",
+        "patch_file",
+        "write_file",
+        "run_shell"
+      ],
+      "step_budget": 7,
+      "wall_timeout": 240,
+      "expected_changed_paths": [
+        "src/config_parser.py"
+      ],
+      "reference_files": {
+        "src/config_parser.py": "def parse_env_lines(text):\n    result = {}\n    for raw in text.splitlines():\n        line = raw.strip()\n        if not line or line.startswith('#'):\n            continue\n        if '=' not in line:\n            raise ValueError(\"invalid env line\")\n        key, value = line.split('=', 1)\n        result[key.strip()] = value.strip()\n    return result\n"
+      },
+      "required_trace_events": [],
+      "multi_agent": false,
+      "grader": "F03_parser"
+    },
+    {
+      "id": "F04_pagination",
+      "category": "failing-test-diagnosis",
+      "prompt": "Fix paginate in src/pagination.py. Pages are 1-based, size must be positive, an out-of-range page returns an empty list, and the public test must pass.",
+      "follow_up_prompt": "",
+      "fixture_repo": "benchmarks/formal_v1/fixtures/F04_pagination",
+      "allowed_tools": [
+        "list_files",
+        "read_file",
+        "search",
+        "patch_file",
+        "write_file",
+        "run_shell"
+      ],
+      "step_budget": 7,
+      "wall_timeout": 240,
+      "expected_changed_paths": [
+        "src/pagination.py"
+      ],
+      "reference_files": {
+        "src/pagination.py": "def paginate(items, page, size):\n    if page < 1 or size < 1:\n        raise ValueError(\"page and size must be positive\")\n    start = (page - 1) * size\n    return list(items[start:start + size])\n"
+      },
+      "required_trace_events": [],
+      "multi_agent": false,
+      "grader": "F04_pagination"
+    },
+    {
+      "id": "M01_user_contract",
+      "category": "multi-file-contract",
+      "prompt": "Add the active flag to the user contract. Update src/models.py and src/serializer.py consistently so serialize_user returns id, name, email, and active, while preserving defaults and existing tests. Do not touch tests.",
+      "follow_up_prompt": "",
+      "fixture_repo": "benchmarks/formal_v1/fixtures/M01_user_contract",
+      "allowed_tools": [
+        "list_files",
+        "read_file",
+        "search",
+        "patch_file",
+        "write_file",
+        "run_shell"
+      ],
+      "step_budget": 8,
+      "wall_timeout": 240,
+      "expected_changed_paths": [
+        "src/models.py",
+        "src/serializer.py"
+      ],
+      "reference_files": {
+        "src/models.py": "from dataclasses import dataclass\n\n@dataclass\nclass User:\n    user_id: int\n    name: str\n    email: str\n    active: bool = True\n",
+        "src/serializer.py": "from .models import User\n\ndef serialize_user(user: User):\n    return {'id': user.user_id, 'name': user.name, 'email': user.email, 'active': bool(user.active)}\n"
+      },
+      "required_trace_events": [],
+      "multi_agent": false,
+      "grader": "M01_user_contract"
+    },
+    {
+      "id": "M02_config_contract",
+      "category": "multi-file-contract",
+      "prompt": "Migrate the timeout configuration contract from timeout to timeout_seconds across src/config.py and src/client.py. load_config must read timeout_seconds and Client must use the same field. Keep backward compatibility for old timeout input only at the loader boundary.",
+      "follow_up_prompt": "",
+      "fixture_repo": "benchmarks/formal_v1/fixtures/M02_config_contract",
+      "allowed_tools": [
+        "list_files",
+        "read_file",
+        "search",
+        "patch_file",
+        "write_file",
+        "run_shell"
+      ],
+      "step_budget": 10,
+      "wall_timeout": 240,
+      "expected_changed_paths": [
+        "src/config.py",
+        "src/client.py"
+      ],
+      "reference_files": {
+        "src/config.py": "from dataclasses import dataclass\n\n@dataclass\nclass Config:\n    timeout_seconds: int = 5\n\ndef load_config(data):\n    raw = data.get('timeout_seconds', data.get('timeout', 5))\n    return Config(timeout_seconds=int(raw))\n",
+        "src/client.py": "from .config import Config\n\nclass Client:\n    def __init__(self, config: Config):\n        self.timeout = config.timeout_seconds\n    def timeout_value(self):\n        return self.timeout\n"
+      },
+      "required_trace_events": [],
+      "multi_agent": false,
+      "grader": "M02_config_contract"
+    },
+    {
+      "id": "M03_invoice_contract",
+      "category": "multi-file-contract",
+      "prompt": "Add currency to the invoice contract. Update src/invoice.py and src/render.py so Invoice defaults to USD and render_invoice includes a currency prefix. Existing tests must remain green.",
+      "follow_up_prompt": "",
+      "fixture_repo": "benchmarks/formal_v1/fixtures/M03_invoice_contract",
+      "allowed_tools": [
+        "list_files",
+        "read_file",
+        "search",
+        "patch_file",
+        "write_file",
+        "run_shell"
+      ],
+      "step_budget": 8,
+      "wall_timeout": 240,
+      "expected_changed_paths": [
+        "src/invoice.py",
+        "src/render.py"
+      ],
+      "reference_files": {
+        "src/invoice.py": "from dataclasses import dataclass\n\n@dataclass\nclass Invoice:\n    number: str\n    total: float\n    currency: str = 'USD'\n",
+        "src/render.py": "from .invoice import Invoice\n\ndef render_invoice(invoice: Invoice):\n    return f'{invoice.currency} {invoice.number}: {invoice.total:.2f}'\n"
+      },
+      "required_trace_events": [],
+      "multi_agent": false,
+      "grader": "M03_invoice_contract"
+    },
+    {
+      "id": "M04_event_contract",
+      "category": "multi-file-contract",
+      "prompt": "Repair the event producer/consumer contract across src/events.py and src/consumer.py. Events must use a data object with type and payload, and the consumer must return the payload for matching event types. Do not edit tests.",
+      "follow_up_prompt": "",
+      "fixture_repo": "benchmarks/formal_v1/fixtures/M04_event_contract",
+      "allowed_tools": [
+        "list_files",
+        "read_file",
+        "search",
+        "patch_file",
+        "write_file",
+        "run_shell"
+      ],
+      "step_budget": 10,
+      "wall_timeout": 240,
+      "expected_changed_paths": [
+        "src/events.py",
+        "src/consumer.py"
+      ],
+      "reference_files": {
+        "src/events.py": "def build_event(kind, payload):\n    return {'type': kind, 'data': {'type': kind, 'payload': payload}}\n",
+        "src/consumer.py": "def consume(event, expected_type):\n    data = event.get('data') or {}\n    if data.get('type') != expected_type:\n        return None\n    return data.get('payload')\n"
+      },
+      "required_trace_events": [],
+      "multi_agent": false,
+      "grader": "M04_event_contract"
+    },
+    {
+      "id": "C01_json_cli",
+      "category": "cli-config-io",
+      "prompt": "Fix src/cli.py so main accepts JSON lines with name and value, writes one JSON result per input line, ignores blank lines, and exits non-zero for malformed input. Keep the command entrypoint unchanged.",
+      "follow_up_prompt": "",
+      "fixture_repo": "benchmarks/formal_v1/fixtures/C01_json_cli",
+      "allowed_tools": [
+        "list_files",
+        "read_file",
+        "search",
+        "patch_file",
+        "write_file",
+        "run_shell"
+      ],
+      "step_budget": 9,
+      "wall_timeout": 240,
+      "expected_changed_paths": [
+        "src/cli.py"
+      ],
+      "reference_files": {
+        "src/cli.py": "import json\nimport sys\n\ndef main():\n    for raw in sys.stdin:\n        if not raw.strip():\n            continue\n        try:\n            item = json.loads(raw)\n            if not isinstance(item, dict) or not isinstance(item.get('name'), str) or not isinstance(item.get('value'), (int, float)):\n                raise ValueError('invalid record')\n            print(json.dumps({'name': item['name'], 'value': item['value'] * 2}, sort_keys=True))\n        except (json.JSONDecodeError, ValueError, TypeError) as exc:\n            print(str(exc), file=sys.stderr)\n            return 2\n    return 0\n\nif __name__ == '__main__':\n    raise SystemExit(main())\n"
+      },
+      "required_trace_events": [],
+      "multi_agent": false,
+      "grader": "C01_json_cli"
+    },
+    {
+      "id": "C02_env_precedence",
+      "category": "cli-config-io",
+      "prompt": "Fix src/settings.py precedence to CLI value > APP_TIMEOUT environment variable > default 5. Parse integers and reject non-positive values with ValueError. Update src/app.py to use Settings.timeout_seconds.",
+      "follow_up_prompt": "",
+      "fixture_repo": "benchmarks/formal_v1/fixtures/C02_env_precedence",
+      "allowed_tools": [
+        "list_files",
+        "read_file",
+        "search",
+        "patch_file",
+        "write_file",
+        "run_shell"
+      ],
+      "step_budget": 10,
+      "wall_timeout": 240,
+      "expected_changed_paths": [
+        "src/settings.py",
+        "src/app.py"
+      ],
+      "reference_files": {
+        "src/settings.py": "import os\nfrom dataclasses import dataclass\n\n@dataclass\nclass Settings:\n    timeout_seconds: int = 5\n    @classmethod\n    def from_sources(cls, cli_timeout=None):\n        raw = cli_timeout if cli_timeout is not None else os.getenv('APP_TIMEOUT', 5)\n        value = int(raw)\n        if value <= 0:\n            raise ValueError('timeout must be positive')\n        return cls(value)\n",
+        "src/app.py": "from .settings import Settings\n\ndef timeout_for(cli_timeout=None):\n    return Settings.from_sources(cli_timeout).timeout_seconds\n"
+      },
+      "required_trace_events": [],
+      "multi_agent": false,
+      "grader": "C02_env_precedence"
+    },
+    {
+      "id": "C03_csv_ingest",
+      "category": "cli-config-io",
+      "prompt": "Fix src/csv_ingest.py to read a CSV header, skip blank rows, trim fields, and raise ValueError when required columns name and score are missing. Preserve numeric scores as floats.",
+      "follow_up_prompt": "",
+      "fixture_repo": "benchmarks/formal_v1/fixtures/C03_csv_ingest",
+      "allowed_tools": [
+        "list_files",
+        "read_file",
+        "search",
+        "patch_file",
+        "write_file",
+        "run_shell"
+      ],
+      "step_budget": 8,
+      "wall_timeout": 240,
+      "expected_changed_paths": [
+        "src/csv_ingest.py"
+      ],
+      "reference_files": {
+        "src/csv_ingest.py": "import csv\nfrom io import StringIO\n\ndef read_records(text):\n    rows = csv.DictReader(StringIO(text.strip()))\n    if not rows.fieldnames or not {'name', 'score'}.issubset(set(rows.fieldnames)):\n        raise ValueError('missing required columns')\n    result = []\n    for row in rows:\n        if not any(str(value or '').strip() for value in row.values()):\n            continue\n        try:\n            result.append({'name': str(row['name']).strip(), 'score': float(row['score'])})\n        except (TypeError, ValueError) as exc:\n            raise ValueError('invalid score') from exc\n    return result\n"
+      },
+      "required_trace_events": [],
+      "multi_agent": false,
+      "grader": "C03_csv_ingest"
+    },
+    {
+      "id": "C04_atomic_json",
+      "category": "cli-config-io",
+      "prompt": "Fix src/storage.py write_json so it creates parent directories, writes sorted JSON plus a trailing newline atomically through a sibling temporary file, and leaves no temporary file behind after success.",
+      "follow_up_prompt": "",
+      "fixture_repo": "benchmarks/formal_v1/fixtures/C04_atomic_json",
+      "allowed_tools": [
+        "list_files",
+        "read_file",
+        "search",
+        "patch_file",
+        "write_file",
+        "run_shell"
+      ],
+      "step_budget": 9,
+      "wall_timeout": 240,
+      "expected_changed_paths": [
+        "src/storage.py"
+      ],
+      "reference_files": {
+        "src/storage.py": "import json\nimport os\nimport tempfile\nfrom pathlib import Path\n\ndef write_json(path, value):\n    target = Path(path)\n    target.parent.mkdir(parents=True, exist_ok=True)\n    fd, tmp_name = tempfile.mkstemp(prefix=f'.{target.name}.', dir=target.parent, text=True)\n    try:\n        with os.fdopen(fd, 'w', encoding='utf-8') as handle:\n            json.dump(value, handle, sort_keys=True)\n            handle.write('\\n')\n            handle.flush()\n            os.fsync(handle.fileno())\n        os.replace(tmp_name, target)\n    finally:\n        if os.path.exists(tmp_name):\n            os.unlink(tmp_name)\n"
+      },
+      "required_trace_events": [],
+      "multi_agent": false,
+      "grader": "C04_atomic_json"
+    },
+    {
+      "id": "R01_incident_fix",
+      "category": "context-resume",
+      "prompt": "Read INCIDENT.md, PLAN.md, and the failing test before editing. Fix the timeout bug in src/service.py, add the required checkpoint note to TODO.md, run tests, and summarize changed files. Do not modify tests or the incident notes.",
+      "follow_up_prompt": "",
+      "fixture_repo": "benchmarks/formal_v1/fixtures/R01_incident_fix",
+      "allowed_tools": [
+        "list_files",
+        "read_file",
+        "search",
+        "patch_file",
+        "write_file",
+        "run_shell",
+        "todo_add",
+        "todo_update",
+        "todo_list"
+      ],
+      "step_budget": 12,
+      "wall_timeout": 240,
+      "expected_changed_paths": [
+        "src/service.py",
+        "TODO.md"
+      ],
+      "reference_files": {
+        "src/service.py": "def request(client, timeout_ms):\n    return client.get(timeout=timeout_ms / 1000.0)\n",
+        "TODO.md": "- [x] Convert timeout_ms to seconds per INCIDENT.md\n- [x] Run regression tests\n"
+      },
+      "required_trace_events": [],
+      "multi_agent": false,
+      "grader": "R01_incident_fix"
+    },
+    {
+      "id": "R02_health_endpoint",
+      "category": "context-resume",
+      "prompt": "Inspect PLAN.md and the existing tests, then implement the /health response in src/app.py. It must return status=ok and the configured version, and add a checkpoint entry to TODO.md. Do not change tests.",
+      "follow_up_prompt": "",
+      "fixture_repo": "benchmarks/formal_v1/fixtures/R02_health_endpoint",
+      "allowed_tools": [
+        "list_files",
+        "read_file",
+        "search",
+        "patch_file",
+        "write_file",
+        "run_shell",
+        "todo_add",
+        "todo_update",
+        "todo_list"
+      ],
+      "step_budget": 10,
+      "wall_timeout": 240,
+      "expected_changed_paths": [
+        "src/app.py",
+        "TODO.md"
+      ],
+      "reference_files": {
+        "src/app.py": "VERSION = '1.4.0'\n\ndef health():\n    return {'status': 'ok', 'version': VERSION}\n",
+        "TODO.md": "- [x] Implement /health status and version\n"
+      },
+      "required_trace_events": [],
+      "multi_agent": false,
+      "grader": "R02_health_endpoint"
+    },
+    {
+      "id": "R03_config_migration",
+      "category": "context-resume",
+      "prompt": "Use MIGRATION.md and CHECKPOINT.md as the source of truth. Migrate src/settings.py from the legacy 'retries' key to 'max_retries', accepting the legacy key only as an input alias, and write a completion line to TODO.md.",
+      "follow_up_prompt": "",
+      "fixture_repo": "benchmarks/formal_v1/fixtures/R03_config_migration",
+      "allowed_tools": [
+        "list_files",
+        "read_file",
+        "search",
+        "patch_file",
+        "write_file",
+        "run_shell",
+        "todo_add",
+        "todo_update",
+        "todo_list"
+      ],
+      "step_budget": 11,
+      "wall_timeout": 240,
+      "expected_changed_paths": [
+        "src/settings.py",
+        "TODO.md"
+      ],
+      "reference_files": {
+        "src/settings.py": "def load(data):\n    raw = data.get('max_retries', data.get('retries', 3))\n    return {'max_retries': int(raw)}\n\ndef dump(settings):\n    return {'max_retries': int(settings['max_retries'])}\n",
+        "TODO.md": "- [x] Migrated retries input alias to canonical max_retries output\n"
+      },
+      "required_trace_events": [],
+      "multi_agent": false,
+      "grader": "R03_config_migration"
+    },
+    {
+      "id": "R04_checkpoint_resume",
+      "category": "context-resume",
+      "prompt": "Read RESUME.md and the TODO ledger. Complete the unfinished function in src/worker.py, preserve the checkpoint's completed steps, and mark the ledger done. The result must keep ordering stable and avoid changing tests.",
+      "follow_up_prompt": "",
+      "fixture_repo": "benchmarks/formal_v1/fixtures/R04_checkpoint_resume",
+      "allowed_tools": [
+        "list_files",
+        "read_file",
+        "search",
+        "patch_file",
+        "write_file",
+        "run_shell",
+        "todo_add",
+        "todo_update",
+        "todo_list"
+      ],
+      "step_budget": 10,
+      "wall_timeout": 240,
+      "expected_changed_paths": [
+        "src/worker.py",
+        "TODO.md"
+      ],
+      "reference_files": {
+        "src/worker.py": "def order_jobs(jobs):\n    return sorted(jobs, key=lambda item: (-item['priority'], item['id']))\n",
+        "TODO.md": "- [x] Validate input\n- [x] Implement stable priority ordering\n"
+      },
+      "required_trace_events": [],
+      "multi_agent": false,
+      "grader": "R04_checkpoint_resume"
+    },
+    {
+      "id": "K01_memory_retry",
+      "category": "memory-follow-up",
+      "prompt": "Read CONVENTIONS.md and src/policy.py. Remember the repository's retry policy, then tell me you are ready without changing files.",
+      "follow_up_prompt": "Apply the retry policy you just remembered to src/policy.py, run the tests, and final. Do not reread CONVENTIONS.md unless necessary.",
+      "fixture_repo": "benchmarks/formal_v1/fixtures/K01_memory_retry",
+      "allowed_tools": [
+        "list_files",
+        "read_file",
+        "search",
+        "patch_file",
+        "write_file",
+        "run_shell"
+      ],
+      "step_budget": 10,
+      "wall_timeout": 240,
+      "expected_changed_paths": [
+        "src/policy.py"
+      ],
+      "reference_files": {
+        "src/policy.py": "MAX_ATTEMPTS = 3\nRETRY_VALIDATION_ERRORS = False\n\ndef retry_policy():\n    return {'max_attempts': MAX_ATTEMPTS, 'retry_validation_errors': RETRY_VALIDATION_ERRORS}\n"
+      },
+      "required_trace_events": [],
+      "multi_agent": false,
+      "grader": "K01_memory_retry"
+    },
+    {
+      "id": "K02_memory_api",
+      "category": "memory-follow-up",
+      "prompt": "Read MEMORY.md and src/routes.py. Remember that all API routes use the /v2 prefix, then confirm readiness without edits.",
+      "follow_up_prompt": "Update src/routes.py to apply the /v2 route convention, run tests, and final without editing MEMORY.md.",
+      "fixture_repo": "benchmarks/formal_v1/fixtures/K02_memory_api",
+      "allowed_tools": [
+        "list_files",
+        "read_file",
+        "search",
+        "patch_file",
+        "write_file",
+        "run_shell"
+      ],
+      "step_budget": 10,
+      "wall_timeout": 240,
+      "expected_changed_paths": [
+        "src/routes.py"
+      ],
+      "reference_files": {
+        "src/routes.py": "def user_route():\n    return '/v2/users'\n\ndef health_route():\n    return '/v2/health'\n"
+      },
+      "required_trace_events": [],
+      "multi_agent": false,
+      "grader": "K02_memory_api"
+    },
+    {
+      "id": "K03_memory_csv",
+      "category": "memory-follow-up",
+      "prompt": "Read NOTES.md and src/export.py. Remember that exports use semicolon delimiters and UTF-8, then confirm readiness without edits.",
+      "follow_up_prompt": "Apply the semicolon UTF-8 export convention to src/export.py, run tests, and final. Do not modify NOTES.md.",
+      "fixture_repo": "benchmarks/formal_v1/fixtures/K03_memory_csv",
+      "allowed_tools": [
+        "list_files",
+        "read_file",
+        "search",
+        "patch_file",
+        "write_file",
+        "run_shell"
+      ],
+      "step_budget": 10,
+      "wall_timeout": 240,
+      "expected_changed_paths": [
+        "src/export.py"
+      ],
+      "reference_files": {
+        "src/export.py": "import csv\n\ndef export_rows(rows, stream):\n    writer = csv.writer(stream, delimiter=';')\n    writer.writerows(rows)\n"
+      },
+      "required_trace_events": [],
+      "multi_agent": false,
+      "grader": "K03_memory_csv"
+    },
+    {
+      "id": "K04_memory_flag",
+      "category": "memory-follow-up",
+      "prompt": "Read PROJECT_MEMORY.md and src/flags.py. Remember that the canonical feature flag is ENABLE_FAST_PATH, then confirm readiness without edits.",
+      "follow_up_prompt": "Apply the canonical ENABLE_FAST_PATH flag with deprecated input alias support to src/flags.py, run tests, and final.",
+      "fixture_repo": "benchmarks/formal_v1/fixtures/K04_memory_flag",
+      "allowed_tools": [
+        "list_files",
+        "read_file",
+        "search",
+        "patch_file",
+        "write_file",
+        "run_shell"
+      ],
+      "step_budget": 10,
+      "wall_timeout": 240,
+      "expected_changed_paths": [
+        "src/flags.py"
+      ],
+      "reference_files": {
+        "src/flags.py": "import os\n\ndef fast_path_enabled():\n    value = os.getenv('ENABLE_FAST_PATH', os.getenv('ENABLE_FAST', '0'))\n    return value == '1'\n"
+      },
+      "required_trace_events": [],
+      "multi_agent": false,
+      "grader": "K04_memory_flag"
+    },
+    {
+      "id": "O01_explore_then_fix",
+      "category": "worker-tool-orchestration",
+      "prompt": "First launch an Explore subagent to inspect the repository and report the contract. Then patch src/auth.py to require a non-empty token, run tests, and final. Do not change tests.",
+      "follow_up_prompt": "",
+      "fixture_repo": "benchmarks/formal_v1/fixtures/O01_explore_then_fix",
+      "allowed_tools": [
+        "list_files",
+        "read_file",
+        "search",
+        "patch_file",
+        "write_file",
+        "run_shell",
+        "agent",
+        "send_message",
+        "task_stop"
+      ],
+      "step_budget": 12,
+      "wall_timeout": 240,
+      "expected_changed_paths": [
+        "src/auth.py"
+      ],
+      "reference_files": {
+        "src/auth.py": "def authorize(token):\n    return bool(str(token or '').strip())\n"
+      },
+      "required_trace_events": [
+        "worker_started"
+      ],
+      "multi_agent": true,
+      "grader": "O01_explore_then_fix"
+    },
+    {
+      "id": "O02_scoped_worker",
+      "category": "worker-tool-orchestration",
+      "prompt": "Use a worker subagent with write_scope=['notes'] to create notes/summary.md containing the two acceptance criteria from README.md. The parent must verify it, run tests, and final. No writes outside notes/ are allowed for the worker.",
+      "follow_up_prompt": "",
+      "fixture_repo": "benchmarks/formal_v1/fixtures/O02_scoped_worker",
+      "allowed_tools": [
+        "list_files",
+        "read_file",
+        "search",
+        "patch_file",
+        "write_file",
+        "run_shell",
+        "agent",
+        "send_message",
+        "task_stop"
+      ],
+      "step_budget": 14,
+      "wall_timeout": 240,
+      "expected_changed_paths": [
+        "src/check.py",
+        "notes/summary.md"
+      ],
+      "reference_files": {
+        "src/check.py": "def ok():\n    return True\n",
+        "notes/summary.md": "- preserve user data\n- emit audit event\n"
+      },
+      "required_trace_events": [
+        "worker_started"
+      ],
+      "multi_agent": true,
+      "grader": "O02_scoped_worker"
+    },
+    {
+      "id": "O03_parallel_notes",
+      "category": "worker-tool-orchestration",
+      "prompt": "Launch two read-only Explore subagents to inspect src/alpha.py and src/beta.py, then update src/combined.py using both findings. Run tests and final; do not edit the source files inspected by workers.",
+      "follow_up_prompt": "",
+      "fixture_repo": "benchmarks/formal_v1/fixtures/O03_parallel_notes",
+      "allowed_tools": [
+        "list_files",
+        "read_file",
+        "search",
+        "patch_file",
+        "write_file",
+        "run_shell",
+        "agent",
+        "send_message",
+        "task_stop"
+      ],
+      "step_budget": 14,
+      "wall_timeout": 240,
+      "expected_changed_paths": [
+        "src/combined.py"
+      ],
+      "reference_files": {
+        "src/combined.py": "from .alpha import VALUE as ALPHA\nfrom .beta import VALUE as BETA\n\ndef total():\n    return ALPHA + BETA\n"
+      },
+      "required_trace_events": [
+        "worker_started"
+      ],
+      "multi_agent": true,
+      "grader": "O03_parallel_notes"
+    },
+    {
+      "id": "O04_worker_stop_guard",
+      "category": "worker-tool-orchestration",
+      "prompt": "Start a bounded worker to inspect src/queue.py, stop it after it reports, then patch src/queue.py so pop_safe returns None for an empty queue and the item otherwise. Run tests and final.",
+      "follow_up_prompt": "",
+      "fixture_repo": "benchmarks/formal_v1/fixtures/O04_worker_stop_guard",
+      "allowed_tools": [
+        "list_files",
+        "read_file",
+        "search",
+        "patch_file",
+        "write_file",
+        "run_shell",
+        "agent",
+        "send_message",
+        "task_stop"
+      ],
+      "step_budget": 14,
+      "wall_timeout": 240,
+      "expected_changed_paths": [
+        "src/queue.py"
+      ],
+      "reference_files": {
+        "src/queue.py": "class Queue:\n    def __init__(self, items=()): self.items = list(items)\n    def pop_safe(self):\n        return self.items.pop(0) if self.items else None\n"
+      },
+      "required_trace_events": [
+        "worker_started"
+      ],
+      "multi_agent": true,
+      "grader": "O04_worker_stop_guard"
+    }
+  ]
+}
