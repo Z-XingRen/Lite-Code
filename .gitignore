@@ -36,7 +36,13 @@ _local/
 artifacts/
 .kami-output/
 release/
+career_materials/
 readme_intro_locked/
+notes/
+/src/
+
+# External benchmark checkouts are managed as separate repositories.
+/benchmarks/external/
 
 # Local secrets and provider configuration
 .env
