@@ -7,7 +7,12 @@ completion_governance.
 
 import time
 
-from ..providers.base import ToolOutput, complete_model
+from ..providers.base import (
+    ToolOutput,
+    complete_model,
+    is_truncated_stop_reason,
+    normalize_stop_reason,
+)
 from ..providers.errors import ProviderError
 from .turn_transitions import (
     CONTINUE_EMPTY_RESPONSE_RETRY,
@@ -131,6 +136,11 @@ def execute_native_tool_calls(
     """Execute one Provider-native call batch and attach its outputs."""
     agent = engine.runtime
     calls = list(result.tool_calls)
+    if is_truncated_stop_reason(result.stop_reason):
+        rejected = yield from reject_truncated_tool_calls(
+            engine, task_state, conversation, result
+        )
+        return tool_steps, 0, rejected
     outputs = []
     feedback = []
     executed = 0
@@ -163,6 +173,56 @@ def execute_native_tool_calls(
     if not agent.abort_requested:
         conversation.append_result(result, tool_outputs=outputs, feedback=feedback)
     return tool_steps, executed, len(calls)
+
+
+def reject_truncated_tool_calls(engine, task_state, conversation, result):
+    """Pair truncated calls with ordered errors without entering the executor."""
+    agent = engine.runtime
+    stop_reason = normalize_stop_reason(result.stop_reason)
+    outputs = []
+    for call in result.tool_calls:
+        content = (
+            "error: tool call not executed because the model response was "
+            f"truncated (stop reason: {stop_reason}); resend the complete tool "
+            "call with all arguments"
+        )
+        metadata = {
+            "tool_status": "rejected",
+            "tool_error_code": "truncated_tool_call",
+            "workspace_changed": False,
+            "affected_paths": [],
+            "synthetic": True,
+            "stop_reason": stop_reason,
+        }
+        agent.record(
+            {
+                "role": "tool",
+                "name": call.name,
+                "args": call.arguments,
+                "content": content,
+                "call_id": call.call_id,
+                "created_at": now(),
+                **metadata,
+            }
+        )
+        outputs.append(
+            ToolOutput(
+                call_id=call.call_id,
+                name=call.name,
+                content=content,
+                is_error=True,
+            )
+        )
+        yield {
+            "type": "tool_result",
+            "run_id": task_state.run_id,
+            "call_id": call.call_id,
+            "name": call.name,
+            "content": content,
+            "metadata": metadata,
+        }
+    conversation.append_result(result, tool_outputs=outputs)
+    return len(outputs)
 
 
 def emit_empty_result_retry(engine, task_state):

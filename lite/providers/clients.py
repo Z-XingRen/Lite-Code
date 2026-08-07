@@ -9,7 +9,7 @@ import urllib.error
 import urllib.request
 
 from ..core.content_blocks import ensure_model_input
-from .base import ModelResult, ToolCall, ensure_conversation
+from .base import ModelResult, ToolCall, ensure_conversation, normalize_stop_reason
 from .errors import ProviderError, sanitize_url
 
 OPENAI_COMPATIBLE_USER_AGENT = "lite/0.1"
@@ -157,10 +157,19 @@ def _openai_result(data, metadata, provider, model, base_url):
     return ModelResult(
         text="\n".join(texts).strip(),
         tool_calls=tuple(calls),
-        stop_reason=str(data.get("status") or data.get("stop_reason") or ""),
+        stop_reason=_openai_stop_reason(data),
         continuation=tuple(continuation),
         metadata=metadata,
     )
+
+
+def _openai_stop_reason(data):
+    raw = data.get("status") or data.get("stop_reason")
+    if not raw:
+        choices = data.get("choices") or []
+        if choices and isinstance(choices[0], dict):
+            raw = choices[0].get("finish_reason")
+    return normalize_stop_reason(raw)
 
 
 def _tool_arguments(value, provider, model, base_url, request_metadata):
@@ -729,7 +738,7 @@ class AnthropicCompatibleModelClient:
         result = ModelResult(
             text="\n".join(texts).strip(),
             tool_calls=tuple(calls),
-            stop_reason=str(data.get("stop_reason") or ""),
+            stop_reason=normalize_stop_reason(data.get("stop_reason")),
             continuation=content,
             metadata=self.last_completion_metadata,
         )

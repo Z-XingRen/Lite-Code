@@ -3,6 +3,22 @@
 from dataclasses import dataclass, field, replace
 from typing import Any
 
+TRUNCATED_STOP_REASON = "length"
+TRUNCATED_STOP_REASON_ALIASES = frozenset(
+    {"length", "max_tokens", "max_output_tokens", "incomplete"}
+)
+
+
+def normalize_stop_reason(value):
+    raw = str(value or "").strip()
+    if raw.lower() in TRUNCATED_STOP_REASON_ALIASES:
+        return TRUNCATED_STOP_REASON
+    return raw
+
+
+def is_truncated_stop_reason(value):
+    return normalize_stop_reason(value) == TRUNCATED_STOP_REASON
+
 
 @dataclass(frozen=True)
 class ToolDefinition:
