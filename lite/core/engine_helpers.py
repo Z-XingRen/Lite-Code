@@ -77,6 +77,13 @@ def execute_tool_payload(engine, task_state, user_message, payload):
             {
                 "artifact_ref": tool_metadata["full_output_artifact"],
                 "original_chars": int(tool_metadata.get("original_chars", 0) or 0),
+                "original_bytes": int(tool_metadata.get("original_bytes", 0) or 0),
+                "original_lines": int(tool_metadata.get("original_lines", 0) or 0),
+                "omitted_bytes": int(tool_metadata.get("omitted_bytes", 0) or 0),
+                "omitted_lines": int(tool_metadata.get("omitted_lines", 0) or 0),
+                "truncation_strategy": str(
+                    tool_metadata.get("truncation_strategy", "")
+                ),
                 "content_sha256": str(tool_metadata.get("content_sha256", "")),
             }
         )

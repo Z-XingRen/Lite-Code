@@ -68,7 +68,9 @@ class RunStore:
         directory.mkdir(parents=True, exist_ok=True)
         index = len(list(directory.glob(f"{stem}-*.txt"))) + 1
         path = directory / f"{stem}-{index:03d}.txt"
-        path.write_text(str(content), encoding="utf-8")
+        # Byte writes avoid platform newline translation, so the artifact is
+        # an exact UTF-8 copy of the tool result on Windows and POSIX.
+        path.write_bytes(str(content).encode("utf-8"))
         return path
 
     def write_binary_artifact(self, task_state, stem, content, suffix):

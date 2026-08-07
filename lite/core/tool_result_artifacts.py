@@ -1,38 +1,44 @@
-"""Artifact-backed rendering for long tool results.
+"""Artifact persistence boundary for adaptive tool-result previews."""
 
-Large tool outputs are written to run artifacts while the prompt receives a
-bounded observation with an artifact reference. This protects prompt budget
-without mutating the original session history.
-"""
+from __future__ import annotations
 
-import hashlib
+from .tool_output_truncation import (
+    DEFAULT_TOOL_OUTPUT_LIMITS,
+    TOOL_OUTPUT_LIMITS,
+    ToolOutputLimits,
+    describe_tool_output,
+    truncate_tool_output,
+)
 
-from .workspace import clip
-
-INLINE_TOOL_OUTPUT_LIMIT = 1000
-INLINE_TOOL_OUTPUT_LIMITS = {
-    "inspect_image": 12000,
-}
+__all__ = [
+    "DEFAULT_TOOL_OUTPUT_LIMITS",
+    "TOOL_OUTPUT_LIMITS",
+    "ToolOutputLimits",
+    "prepare_tool_result_observation",
+]
 
 
 def prepare_tool_result_observation(agent, name, full_result):
     full_result = str(full_result)
-    inline_limit = INLINE_TOOL_OUTPUT_LIMITS.get(name, INLINE_TOOL_OUTPUT_LIMIT)
-    metadata = {
-        "original_chars": len(full_result),
-        "content_sha256": hashlib.sha256(full_result.encode("utf-8")).hexdigest(),
-        "full_output_artifact": "",
-    }
-    if len(full_result) <= inline_limit:
-        return clip(full_result, inline_limit), metadata
+    limits = TOOL_OUTPUT_LIMITS.get(name, DEFAULT_TOOL_OUTPUT_LIMITS)
+    metadata = describe_tool_output(full_result, limits)
+    if not metadata["truncated"]:
+        return full_result, metadata
+
     task_state = getattr(agent, "current_task_state", None)
-    if task_state is None:
-        return clip(full_result, inline_limit), metadata
-    path = agent.run_store.write_text_artifact(task_state, f"{name}-output", full_result)
-    relative = agent.run_store.artifact_ref(task_state, path)
-    metadata["full_output_artifact"] = relative
-    return (
-        f"full output saved: {relative}\n"
-        + clip(full_result, inline_limit),
-        metadata,
+    artifact_ref = ""
+    if task_state is not None:
+        path = agent.run_store.write_text_artifact(
+            task_state, f"{name}-output", full_result
+        )
+        artifact_ref = agent.run_store.artifact_ref(task_state, path)
+        metadata["full_output_artifact"] = artifact_ref
+
+    observation, truncation_metadata = truncate_tool_output(
+        full_result,
+        name=name,
+        limits=limits,
+        artifact_ref=artifact_ref,
     )
+    metadata.update(truncation_metadata)
+    return observation, metadata
