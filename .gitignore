@@ -25,6 +25,8 @@ htmlcov/
 /tests/test_benchmark_integrations.py
 /tests/test_evaluator.py
 /tests/test_tui.py
+/tests/fixtures/dream_inputs/
+/tests/fixtures/runtime_smoke/
 
 # Temporary files
 *.tmp
