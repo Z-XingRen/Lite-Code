@@ -2,14 +2,14 @@
 
 The legacy workspace snapshot hashes every file in the repository.  A
 transparent file tool already tells us its target path, so this tracker hashes
-only those paths before and after the effect.  Opaque tools intentionally do
-not produce a token here; their conservative fallback remains the caller's
-responsibility until the opaque-tool work package is implemented.
+only those paths before and after the effect. Opaque tools receive a metadata
+candidate token and use an explicit legacy fallback until a later package can
+prove a narrower production path.
 """
 
 import hashlib
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .workspace import IGNORED_PATH_NAMES
@@ -17,6 +17,7 @@ from .workspace import IGNORED_PATH_NAMES
 TRANSPARENT_TOOL_NAMES = frozenset(
     {"write_file", "patch_file", "delete_file", "rename", "rename_file"}
 )
+OPAQUE_TOOL_NAMES = frozenset({"run_shell"})
 _PATH_ARGUMENT_KEYS = (
     "path",
     "paths",
@@ -47,23 +48,41 @@ class _FileState:
 
 
 @dataclass(frozen=True)
+class _PathMetadata:
+    size: int
+    mtime_ns: int
+    ctime_ns: int
+    inode: int
+    mode: int
+
+
+class WorkspaceTrackingError(RuntimeError):
+    """Raised when workspace evidence cannot be completed safely."""
+
+
+@dataclass(frozen=True)
 class WorkspaceChangeToken:
     tool_name: str
     paths: tuple[str, ...]
     before: dict[str, _FileState]
+    mode: str = "transparent"
+    before_metadata: dict[str, _PathMetadata] = field(default_factory=dict)
+    metadata_errors: tuple[str, ...] = ()
 
 
 class WorkspaceChangeTracker:
     """Track known file targets without scanning unrelated workspace files.
 
-    ``begin`` returns ``None`` for an opaque tool.  Callers must then use an
-    appropriate conservative tracker.  Explicit ``target_paths`` is provided
-    for future transparent tools such as a rename operation and makes the
-    contract independently testable without registering a product tool.
+    ``begin`` returns a metadata candidate token for ``run_shell`` and a
+    path-scoped token for transparent tools. Explicit ``target_paths`` is
+    provided for future transparent tools such as a rename operation and makes
+    the contract independently testable without registering a product tool.
     """
 
     def __init__(self, root):
         self.root = Path(root).resolve()
+        self.last_observation = {}
+        self._fallback_count = 0
 
     def begin(self, tool, args=None, *, target_paths=None):
         tool_name = str(getattr(tool, "name", tool))
@@ -72,6 +91,16 @@ class WorkspaceChangeTracker:
             args or {},
             target_paths=target_paths,
         )
+        if tool_name in OPAQUE_TOOL_NAMES:
+            before_metadata, errors = self._scan_metadata()
+            return WorkspaceChangeToken(
+                tool_name,
+                (),
+                {},
+                mode="opaque",
+                before_metadata=before_metadata,
+                metadata_errors=tuple(errors),
+            )
         has_declared_targets = bool(target_paths)
         has_path_arguments = any(key in (args or {}) for key in _PATH_ARGUMENT_KEYS)
         if not paths and not (
@@ -85,10 +114,51 @@ class WorkspaceChangeTracker:
         }
         return WorkspaceChangeToken(tool_name, tuple(paths), before)
 
-    def finish(self, token, result=None):
+    def finish(
+        self,
+        token,
+        result=None,
+        *,
+        legacy_before=None,
+        legacy_after=None,
+        fallback_duration_ms=0,
+    ):
         """Return changed paths and summaries in legacy snapshot order."""
         if token is None:
             return [], []
+        if token.mode == "opaque":
+            after_metadata, errors = self._scan_metadata()
+            candidates, candidate_summary = self._diff_metadata(
+                token.before_metadata, after_metadata
+            )
+            scan_errors = tuple(token.metadata_errors) + tuple(errors)
+            if legacy_before is not None and legacy_after is not None:
+                self._fallback_count += 1
+                self._set_observation(
+                    mode="opaque",
+                    candidates=candidates,
+                    fallback=True,
+                    fallback_reason=(
+                        "metadata_scan_error" if scan_errors else "opaque_tool"
+                    ),
+                    fallback_duration_ms=fallback_duration_ms,
+                    scan_errors=scan_errors,
+                )
+                return self._diff_snapshots(legacy_before, legacy_after)
+            if scan_errors:
+                raise WorkspaceTrackingError(
+                    "opaque workspace metadata scan failed: "
+                    + "; ".join(scan_errors)
+                )
+            self._set_observation(
+                mode="opaque",
+                candidates=candidates,
+                fallback=False,
+                fallback_reason="",
+                fallback_duration_ms=0,
+                scan_errors=(),
+            )
+            return candidates, candidate_summary
         after = {
             path: _FileState.capture(self.root / Path(path))
             for path in token.paths
@@ -109,7 +179,94 @@ class WorkspaceChangeTracker:
                 summaries.append(f"deleted:{path}")
             else:
                 summaries.append(f"modified:{path}")
+        self._set_observation(
+            mode="transparent",
+            candidates=changed,
+            fallback=False,
+            fallback_reason="",
+            fallback_duration_ms=0,
+            scan_errors=(),
+        )
         return changed, summaries
+
+    def _scan_metadata(self):
+        metadata = {}
+        errors = []
+        for path in self.root.rglob("*"):
+            try:
+                relative = path.relative_to(self.root)
+            except ValueError:
+                continue
+            if any(part in IGNORED_PATH_NAMES for part in relative.parts) or not path.is_file():
+                continue
+            relative_path = relative.as_posix()
+            try:
+                stat = path.stat()
+            except OSError as exc:
+                errors.append(f"{relative_path}: {exc}")
+                continue
+            metadata[relative_path] = _PathMetadata(
+                size=stat.st_size,
+                mtime_ns=stat.st_mtime_ns,
+                ctime_ns=stat.st_ctime_ns,
+                inode=getattr(stat, "st_ino", 0),
+                mode=stat.st_mode,
+            )
+        return metadata, errors
+
+    @staticmethod
+    def _diff_metadata(before, after):
+        changed = []
+        summaries = []
+        for path in sorted(set(before) | set(after)):
+            old = before.get(path)
+            current = after.get(path)
+            if old == current:
+                continue
+            changed.append(path)
+            if old is None:
+                summaries.append(f"created:{path}")
+            elif current is None:
+                summaries.append(f"deleted:{path}")
+            else:
+                summaries.append(f"modified:{path}")
+        return changed, summaries
+
+    @staticmethod
+    def _diff_snapshots(before, after):
+        changed = []
+        summaries = []
+        for path in sorted(set(before) | set(after)):
+            if before.get(path) == after.get(path):
+                continue
+            changed.append(path)
+            if path not in before:
+                summaries.append(f"created:{path}")
+            elif path not in after:
+                summaries.append(f"deleted:{path}")
+            else:
+                summaries.append(f"modified:{path}")
+        return changed, summaries
+
+    def _set_observation(
+        self,
+        *,
+        mode,
+        candidates,
+        fallback,
+        fallback_reason,
+        fallback_duration_ms,
+        scan_errors,
+    ):
+        self.last_observation = {
+            "workspace_tracker_mode": mode,
+            "workspace_tracker_candidates": list(candidates),
+            "workspace_tracker_fallback": bool(fallback),
+            "workspace_tracker_fallback_reason": fallback_reason,
+            "workspace_tracker_fallback_count": self._fallback_count,
+            "workspace_tracker_fallback_ms": round(float(fallback_duration_ms or 0), 3),
+            "workspace_tracker_scan_errors": list(scan_errors),
+        }
 
     def _candidate_paths(self, tool_name, args, *, target_paths=None):
         if target_paths is None and tool_name not in TRANSPARENT_TOOL_NAMES:

@@ -68,8 +68,9 @@ def run_tool(agent, name, args):
         )
         agent.record_process_note_for_tool(name, agent._last_tool_result_metadata)
         return policy.message
-    tracking_token, before_snapshot = agent.prepare_workspace_change(tool, args)
+    tracking_token, before_snapshot = None, None
     try:
+        tracking_token, before_snapshot = agent.prepare_workspace_change(tool, args)
         full_result = tool.execute(args).content
         pending_metadata = dict(getattr(agent, "_pending_tool_result_metadata", {}) or {})
         agent._pending_tool_result_metadata = {}
@@ -94,6 +95,7 @@ def run_tool(agent, name, args):
             affected_paths=affected_paths, workspace_changed=workspace_changed,
             workspace_fingerprint=agent.workspace.fingerprint(),
             diff_summary=diff_summary, **artifact_metadata, **pending_metadata,
+            **getattr(agent, "_last_workspace_tracking_metadata", {}),
         )
         agent.record_process_note_for_tool(name, agent._last_tool_result_metadata)
         return result
@@ -118,14 +120,13 @@ def run_tool(agent, name, args):
             workspace_changed=workspace_changed,
             workspace_fingerprint=agent.workspace.fingerprint(),
             diff_summary=diff_summary,
+            **getattr(agent, "_last_workspace_tracking_metadata", {}),
         )
         agent.record_process_note_for_tool(name, agent._last_tool_result_metadata)
         return f"error: tool {name} failed: {exc}"
-
 def _run_shell_exit_code(result):
     match = re.search(r"exit_code:\s*(-?\d+)", str(result))
     return int(match.group(1)) if match else 0
-
 
 def _tool_result_metadata(
     tool, *, status, error_code="", security_event_type="", risk_level=None,
@@ -146,7 +147,6 @@ def _tool_result_metadata(
     if workspace_fingerprint is not None:
         metadata["workspace_fingerprint"] = workspace_fingerprint
     return metadata
-
 
 def _emit_permission_decision(agent, tool, args, decision):
     agent.session_event_bus.emit(

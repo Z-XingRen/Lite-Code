@@ -1,3 +1,5 @@
+import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -5,6 +7,7 @@ import pytest
 from lite import Lite, SessionStore, WorkspaceContext
 from lite.core.workspace_change_tracker import WorkspaceChangeTracker
 from lite.testing import ScriptedModelClient
+from lite.testing import shell_join
 
 
 def build_agent(tmp_path):
@@ -89,3 +92,121 @@ def test_tracker_rejects_paths_outside_workspace(tmp_path):
 
     with pytest.raises(ValueError, match="path escapes workspace"):
         tracker.begin("write_file", {"path": "../outside.txt"})
+
+
+def test_opaque_tracker_discovers_untracked_and_gitignored_paths(tmp_path):
+    (tmp_path / ".gitignore").write_text("ignored.log\n", encoding="utf-8")
+    tracker = WorkspaceChangeTracker(tmp_path)
+
+    token = tracker.begin("run_shell", {"command": "opaque"})
+    (tmp_path / "untracked.txt").write_text("new\n", encoding="utf-8")
+    (tmp_path / "ignored.log").write_text("ignored\n", encoding="utf-8")
+
+    affected, summary = tracker.finish(token)
+
+    assert affected == ["ignored.log", "untracked.txt"]
+    assert summary == ["created:ignored.log", "created:untracked.txt"]
+    assert tracker.last_observation["workspace_tracker_mode"] == "opaque"
+    assert tracker.last_observation["workspace_tracker_fallback"] is False
+    assert tracker.last_observation["workspace_tracker_candidates"] == affected
+
+
+def test_opaque_tracker_reports_multi_file_shell_changes_in_stable_order(tmp_path):
+    (tmp_path / "modify.txt").write_text("before\n", encoding="utf-8")
+    (tmp_path / "delete.txt").write_text("remove\n", encoding="utf-8")
+    tracker = WorkspaceChangeTracker(tmp_path)
+
+    token = tracker.begin("run_shell", {"command": "opaque"})
+    (tmp_path / "modify.txt").write_text("after\n", encoding="utf-8")
+    (tmp_path / "delete.txt").unlink()
+    (tmp_path / "create.txt").write_text("created\n", encoding="utf-8")
+
+    affected, summary = tracker.finish(token)
+
+    assert affected == ["create.txt", "delete.txt", "modify.txt"]
+    assert summary == [
+        "created:create.txt",
+        "deleted:delete.txt",
+        "modified:modify.txt",
+    ]
+
+
+def test_shell_fallback_is_observable_and_preserves_ignored_changes(tmp_path):
+    (tmp_path / ".gitignore").write_text("ignored.log\n", encoding="utf-8")
+    agent = build_agent(tmp_path)
+    script = (
+        "from pathlib import Path; "
+        "Path('untracked.txt').write_text('new\\n'); "
+        "Path('ignored.log').write_text('ignored\\n')"
+    )
+
+    result = agent.run_tool(
+        "run_shell",
+        {"command": shell_join([sys.executable, "-c", script]), "timeout": 20},
+    )
+
+    assert "exit_code: 0" in result
+    metadata = agent._last_tool_result_metadata
+    assert metadata["affected_paths"] == ["ignored.log", "untracked.txt"]
+    assert metadata["workspace_tracker_mode"] == "opaque"
+    assert metadata["workspace_tracker_fallback"] is True
+    assert metadata["workspace_tracker_fallback_count"] == 1
+    assert metadata["workspace_tracker_candidates"] == metadata["affected_paths"]
+    assert metadata["workspace_tracker_fallback_ms"] >= 0
+
+
+def test_failed_shell_effect_keeps_all_changed_paths(tmp_path):
+    agent = build_agent(tmp_path)
+
+    def failing_shell(_args):
+        (tmp_path / "first.txt").write_text("first\n", encoding="utf-8")
+        (tmp_path / "second.txt").write_text("second\n", encoding="utf-8")
+        raise RuntimeError("shell failed after writing files")
+
+    agent.tools["run_shell"] = replace(agent.tools["run_shell"], runner=failing_shell)
+    result = agent.run_tool("run_shell", {"command": "synthetic", "timeout": 20})
+
+    assert "tool run_shell failed" in result
+    assert agent._last_tool_result_metadata["tool_status"] == "partial_success"
+    assert agent._last_tool_result_metadata["affected_paths"] == [
+        "first.txt",
+        "second.txt",
+    ]
+
+
+def test_finish_failure_is_not_reported_as_successful_fallback(tmp_path, monkeypatch):
+    agent = build_agent(tmp_path)
+
+    def successful_shell(_args):
+        (tmp_path / "written.txt").write_text("written\n", encoding="utf-8")
+        return "exit_code: 0\nstdout:\n(empty)\nstderr:\n(empty)"
+
+    def fail_finish(*_args, **_kwargs):
+        raise RuntimeError("tracker finish failed")
+
+    agent.tools["run_shell"] = replace(agent.tools["run_shell"], runner=successful_shell)
+    monkeypatch.setattr(agent.workspace_change_tracker, "finish", fail_finish)
+
+    result = agent.run_tool("run_shell", {"command": "synthetic", "timeout": 20})
+
+    assert "tool run_shell failed" in result
+    metadata = agent._last_tool_result_metadata
+    assert metadata["tool_status"] == "error"
+    assert metadata["workspace_changed"] is False
+    assert metadata["workspace_tracker_error"] == "tracker finish failed"
+
+
+def test_fallback_initialization_failure_is_fail_closed(tmp_path, monkeypatch):
+    agent = build_agent(tmp_path)
+
+    def fail_snapshot():
+        raise RuntimeError("legacy snapshot failed")
+
+    monkeypatch.setattr(agent, "capture_workspace_snapshot", fail_snapshot)
+    result = agent.run_tool("run_shell", {"command": "synthetic", "timeout": 20})
+
+    assert "tool run_shell failed" in result
+    metadata = agent._last_tool_result_metadata
+    assert metadata["tool_status"] == "error"
+    assert metadata["workspace_changed"] is False
+    assert metadata["workspace_tracker_error"] == "legacy snapshot failed"

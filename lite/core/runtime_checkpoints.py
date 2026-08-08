@@ -1,6 +1,7 @@
 """Runtime workspace snapshot and checkpoint helpers."""
 
 import hashlib
+import time
 import uuid
 
 from ..features import memory as memorylib
@@ -17,15 +18,56 @@ class RuntimeCheckpointsMixin:
         return self.workspace_change_tracker.finish(token, result)
 
     def prepare_workspace_change(self, tool, args):
+        self._workspace_tracking_error = ""
+        self._last_workspace_tracking_metadata = {}
         token = self.begin_workspace_change(tool, args) if tool.risky else None
-        before = self.capture_workspace_snapshot() if tool.risky and token is None else {}
+        before = {}
+        if tool.risky and (token is None or token.mode == "opaque"):
+            try:
+                before = self.capture_workspace_snapshot()
+            except Exception as exc:
+                self._workspace_tracking_error = str(exc)
+                self._last_workspace_tracking_metadata = {
+                    "workspace_tracker_mode": (
+                        "opaque" if token is not None and token.mode == "opaque" else "legacy"
+                    ),
+                    "workspace_tracker_fallback": token is None or token.mode == "opaque",
+                    "workspace_tracker_error": str(exc),
+                }
+                raise
         return token, before
 
     def complete_workspace_change(self, tool, token, before, result=None):
-        if token is not None:
-            return self.finish_workspace_change(token, result)
-        after = self.capture_workspace_snapshot() if tool.risky else before
-        return self.diff_workspace_snapshots(before, after)
+        if self._workspace_tracking_error or before is None:
+            return [], []
+        try:
+            if token is not None:
+                if token.mode == "opaque":
+                    started = time.perf_counter()
+                    after = self.capture_workspace_snapshot()
+                    outcome = self.workspace_change_tracker.finish(
+                        token,
+                        result,
+                        legacy_before=before,
+                        legacy_after=after,
+                        fallback_duration_ms=(time.perf_counter() - started) * 1000,
+                    )
+                else:
+                    outcome = self.finish_workspace_change(token, result)
+            else:
+                after = self.capture_workspace_snapshot() if tool.risky else before
+                outcome = self.diff_workspace_snapshots(before, after)
+        except Exception as exc:
+            self._workspace_tracking_error = str(exc)
+            self._last_workspace_tracking_metadata = dict(
+                self.workspace_change_tracker.last_observation
+            )
+            self._last_workspace_tracking_metadata["workspace_tracker_error"] = str(exc)
+            raise
+        self._last_workspace_tracking_metadata = dict(
+            self.workspace_change_tracker.last_observation
+        )
+        return outcome
 
     def capture_workspace_snapshot(self):
         snapshot = {}
