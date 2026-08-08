@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from ..cancellation import CancellationToken
 from ..features import memory as memorylib, skills as skillslib
 from ..features.sandbox import SandboxConfig, SandboxRunner
 from ..providers.base import ToolDefinition
@@ -110,6 +111,7 @@ class Lite(RuntimeSecretsMixin, RuntimeCheckpointsMixin):
         self.model_client_factory = model_client_factory
         self.model_client_router = model_client_router or ModelClientRouter(model_client)
         self.abort_requested = False
+        self.current_cancellation_token = CancellationToken()
         self.ask_user_callback = ask_user_callback
         self.sandbox_config = sandbox_config or SandboxConfig()
         self.sandbox_runner = SandboxRunner(
@@ -789,12 +791,18 @@ class Lite(RuntimeSecretsMixin, RuntimeCheckpointsMixin):
 
     def abort_current_turn(self):
         self.abort_requested = True
+        self.current_cancellation_token.cancel()
         abort = getattr(self.model_client, "abort", None)
         if callable(abort):
             try:
                 abort()
             except Exception:
                 pass
+
+    def start_cancellation_scope(self):
+        self.abort_requested = False
+        self.current_cancellation_token = CancellationToken()
+        return self.current_cancellation_token
 
     def ask_user(self, question, choices=None):
         if self.ask_user_callback is None:

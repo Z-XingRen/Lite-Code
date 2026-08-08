@@ -7,7 +7,7 @@ one user request into model calls, tool executions, and user-visible events.
 import time
 
 from ..features import memory as memorylib
-from ..providers.base import ModelConversation, complete_model
+from ..providers.base import ModelConversation
 from .completion_governance import (
     final_readiness_action,
     finish_limited_run,
@@ -16,6 +16,7 @@ from .completion_governance import (
 )
 from .context_replacements import commit_proposed_replacements
 from .model_errors import finish_model_error
+from .model_streaming import consume_model_stream
 from .engine_helpers import (
     emit_empty_result_retry,
     execute_native_tool_calls,
@@ -87,6 +88,7 @@ class Engine:
         agent.current_task_state = task_state
         agent.current_turn_id = task_state.task_id
         agent.current_run_id = task_state.run_id
+        agent.start_cancellation_scope()
         agent.current_run_dir = agent.run_store.start_run(task_state)
         agent.session_event_bus.emit(
             "turn_started",
@@ -261,10 +263,8 @@ class Engine:
 
             model_started_at = time.monotonic()
             try:
-                result = complete_model(
-                    agent.model_client,
-                    conversation,
-                    agent.max_new_tokens,
+                result = yield from consume_model_stream(
+                    self, task_state, conversation, agent.max_new_tokens,
                     prompt_cache_key=prompt_cache_key,
                     prompt_cache_retention=prompt_cache_retention,
                 )

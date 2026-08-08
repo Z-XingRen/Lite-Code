@@ -123,6 +123,38 @@ class ScriptedModelClient:
         return replace(result, tool_calls=tuple(calls))
 
 
+class ScriptedStreamingModelClient(ScriptedModelClient):
+    def __init__(self, streams):
+        super().__init__([])
+        self.streams = list(streams)
+        self.cancellation_tokens = []
+        self.abort_count = 0
+
+    def stream_result(
+        self, request, max_new_tokens, *, cancellation_token=None, **kwargs
+    ):
+        del max_new_tokens, kwargs
+        prompt = request.initial_input if isinstance(request, ModelConversation) else request
+        self.prompts.append(prompt)
+        self.requests.append(request)
+        self.cancellation_tokens.append(cancellation_token)
+        if not self.streams:
+            raise RuntimeError("scripted streaming model ran out of streams")
+        stream = self.streams.pop(0)
+        for item in stream:
+            if cancellation_token is not None:
+                cancellation_token.raise_if_cancelled()
+            if callable(item):
+                item(cancellation_token)
+                continue
+            yield item
+        if cancellation_token is not None:
+            cancellation_token.raise_if_cancelled()
+
+    def abort(self):
+        self.abort_count += 1
+
+
 def scripted_tool(name, args=None, *, call_id=""):
     return {
         "call_id": str(call_id),
