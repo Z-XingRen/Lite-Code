@@ -7,6 +7,11 @@ from .session_journal_reducer import (
     reduce_journal_record,
     replay_journal,
 )
+from .session_journal_recovery import (
+    JournalRecoveryAction,
+    JournalRestore,
+    restore_session_journal,
+)
 from .session_journal_schema import (
     JOURNAL_SCHEMA_VERSION,
     JournalCorruption,
@@ -20,11 +25,14 @@ __all__ = [
     "CompletedOperation",
     "JournalCorruption",
     "JournalRecord",
+    "JournalRecoveryAction",
+    "JournalRestore",
     "JournalSchemaError",
     "JournalState",
     "JournalWriterError",
     "OpenOperation",
     "SessionJournalWriter",
     "reduce_journal_record",
+    "restore_session_journal",
     "replay_journal",
 ]

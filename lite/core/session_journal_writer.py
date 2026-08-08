@@ -1,5 +1,6 @@
 """Exclusive append writer for one versioned session journal."""
 
+import hashlib
 import os
 import threading
 import uuid
@@ -7,6 +8,12 @@ from pathlib import Path
 
 from ..cancellation import CancellationRequested
 from .session_journal_reducer import JournalState, reduce_journal_record
+from .session_journal_recovery import (
+    recovery_actions_from_state,
+    restore_session_journal,
+    snapshot_path_for,
+    write_atomic_snapshot,
+)
 from .session_journal_schema import (
     EFFECT_INTENT,
     EFFECT_RESULT,
@@ -28,8 +35,11 @@ class SessionJournalWriter:
     def __init__(self, path, *, sync=True):
         self.path = Path(path)
         self.lock_path = self.path.with_name(f"{self.path.name}.lock")
+        self.snapshot_path = snapshot_path_for(self.path)
         self.sync = bool(sync)
         self.state = JournalState.empty()
+        self.discarded_tail = b""
+        self.recovery_actions = ()
         self._state_lock = threading.RLock()
         self._operation_lock = threading.Lock()
         self._closed = False
@@ -50,7 +60,26 @@ class SessionJournalWriter:
                 {"session": session},
                 operation_id=str(session.get("id", "")),
             )
-        except Exception:
+        except BaseException:
+            writer._release_file_lock()
+            raise
+        return writer
+
+    @classmethod
+    def open(cls, path, *, sync=True):
+        writer = cls(path, sync=sync)
+        writer._acquire_file_lock()
+        try:
+            restored = restore_session_journal(
+                writer.path, snapshot_path=writer.snapshot_path
+            )
+            writer.state = restored.state
+            writer.discarded_tail = restored.discarded_tail
+            if restored.discarded_tail:
+                writer._truncate_to(restored.complete_size)
+            writer._recover_open_operation()
+            writer.recovery_actions = recovery_actions_from_state(writer.state)
+        except BaseException:
             writer._release_file_lock()
             raise
         return writer
@@ -78,6 +107,28 @@ class SessionJournalWriter:
             operation_id=operation_id,
             record_id=record_id,
         )
+
+    def write_snapshot(self):
+        with self.effect(
+            "snapshot",
+            request={"snapshot_file": self.snapshot_path.name},
+            replay_policy="interrupt",
+        ) as effect:
+            snapshot_sequence = self.state.last_sequence
+            write_atomic_snapshot(
+                self.snapshot_path,
+                self.path,
+                self.state,
+                sync=self.sync,
+            )
+            effect.complete(
+                "ok",
+                {
+                    "snapshot_file": self.snapshot_path.name,
+                    "snapshot_sequence": snapshot_sequence,
+                },
+            )
+        return self.snapshot_path
 
     def effect(
         self,
@@ -184,22 +235,77 @@ class SessionJournalWriter:
             if self.sync:
                 os.fsync(journal.fileno())
 
-    def _acquire_file_lock(self):
-        try:
-            descriptor = os.open(
-                self.lock_path,
-                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
-                0o600,
+    def _truncate_to(self, size):
+        with self.path.open("r+b") as journal:
+            journal.truncate(size)
+            journal.flush()
+            if self.sync:
+                os.fsync(journal.fileno())
+
+    def _recover_open_operation(self):
+        operation = self.state.open_operation
+        if operation is None:
+            return
+        action = "retry" if operation.replay_policy == "replay_safe" else "interrupt"
+        record_id = "recovery_" + hashlib.sha256(
+            operation.operation_id.encode("utf-8")
+        ).hexdigest()
+        with self._operation_lock:
+            self._append_record(
+                EFFECT_RESULT,
+                {
+                    "effect_type": operation.effect_type,
+                    "call_id": operation.call_id,
+                    "outcome": "interrupted",
+                    "result": {
+                        "reason": "process_interrupted",
+                        "recovery_action": action,
+                        "synthetic": True,
+                    },
+                },
+                operation_id=operation.operation_id,
+                record_id=record_id,
             )
-        except FileExistsError as exc:
-            raise JournalWriterError(
-                f"session journal writer already active: {self.path}"
-            ) from exc
+
+    def _acquire_file_lock(self):
+        descriptor = None
+        for attempt in range(2):
+            try:
+                descriptor = os.open(
+                    self.lock_path,
+                    os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                    0o600,
+                )
+                break
+            except FileExistsError as exc:
+                if attempt == 0 and self._remove_stale_file_lock():
+                    continue
+                raise JournalWriterError(
+                    f"session journal writer already active: {self.path}"
+                ) from exc
+        if descriptor is None:  # pragma: no cover - loop either opens or raises
+            raise JournalWriterError(f"could not lock session journal: {self.path}")
         try:
             os.write(descriptor, self._owner_token.encode("ascii"))
             os.fsync(descriptor)
         finally:
             os.close(descriptor)
+
+    def _remove_stale_file_lock(self):
+        try:
+            owner = self.lock_path.read_text(encoding="ascii")
+            process_id = int(owner.split(":", 1)[0])
+        except (OSError, UnicodeDecodeError, ValueError):
+            return False
+        if _process_is_alive(process_id):
+            return False
+        try:
+            if self.lock_path.read_text(encoding="ascii") != owner:
+                return False
+            self.lock_path.unlink()
+        except (FileNotFoundError, OSError):
+            return False
+        return True
 
     def _release_file_lock(self):
         try:
@@ -271,3 +377,48 @@ class JournalEffect:
 
 def _new_id(prefix):
     return f"{prefix}_{uuid.uuid4().hex}"
+
+
+def _process_is_alive(process_id):
+    if process_id <= 0:
+        return False
+    if process_id == os.getpid():
+        return True
+    if os.name == "nt":
+        return _windows_process_is_alive(process_id)
+    try:
+        os.kill(process_id, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _windows_process_is_alive(process_id):
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.GetExitCodeProcess.argtypes = (
+            wintypes.HANDLE,
+            ctypes.POINTER(wintypes.DWORD),
+        )
+        kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        handle = kernel32.OpenProcess(0x1000, False, process_id)
+        if not handle:
+            return ctypes.get_last_error() == 5
+        try:
+            exit_code = wintypes.DWORD()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return True
+            return exit_code.value == 259
+        finally:
+            kernel32.CloseHandle(handle)
+    except (AttributeError, OSError):
+        return True
