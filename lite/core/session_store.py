@@ -24,10 +24,38 @@ class SessionStore:
     def journal_path(self, session_id):
         return self.root / f"{_safe_session_id(session_id)}.journal.jsonl"
 
+    def authority_path(self, session_id):
+        from .session_migration import authority_marker_path
+
+        return authority_marker_path(self, session_id)
+
+    def session_authority(self, session_id):
+        from .session_migration import AUTHORITY_LEGACY, read_authority_marker
+
+        marker = read_authority_marker(self, session_id)
+        return marker["authority"] if marker is not None else AUTHORITY_LEGACY
+
+    def migrate_session(self, session_id, **kwargs):
+        from .session_migration import migrate_legacy_session
+
+        return migrate_legacy_session(self, session_id, **kwargs)
+
+    def rollback_session(self, session_id, **kwargs):
+        from .session_migration import rollback_session
+
+        return rollback_session(self, session_id, **kwargs)
+
     def save(self, session):
         path = self.path(session["id"])
         payload = json.dumps(session, indent=2)
         with self._lock:
+            from .session_migration import AUTHORITY_JOURNAL, read_authority_marker
+
+            marker = read_authority_marker(self, session["id"])
+            if marker is not None and marker["authority"] == AUTHORITY_JOURNAL:
+                raise RuntimeError(
+                    "legacy session is read-only after journal cutover; append to the journal"
+                )
             tmp_path = path.with_name(
                 f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
             )
@@ -37,25 +65,38 @@ class SessionStore:
 
     def load(self, session_id):
         with self._lock:
+            from .session_migration import (
+                AUTHORITY_JOURNAL,
+                recover_pending_migration,
+                read_authority_marker,
+            )
+
+            recover_pending_migration(self, session_id)
+            marker = read_authority_marker(self, session_id)
+            if marker is not None and marker["authority"] == AUTHORITY_JOURNAL:
+                from .session_journal import restore_session_journal
+
+                restored = restore_session_journal(self.journal_path(session_id))
+                return restored.state.session
             return json.loads(self.path(session_id).read_text(encoding="utf-8"))
 
     def latest(self):
-        files = sorted(self.root.glob("*.json"), key=lambda path: path.stat().st_mtime)
+        files = sorted(self._session_paths(), key=lambda path: path.stat().st_mtime)
         return files[-1].stem if files else None
 
     def list_sessions(self):
         rows = []
         for index, path in enumerate(
             sorted(
-                self.root.glob("*.json"),
+                self._session_paths(),
                 key=lambda item: item.stat().st_mtime,
                 reverse=True,
             ),
             start=1,
         ):
             try:
-                session = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
+                session = self.load(path.stem)
+            except (OSError, ValueError, RuntimeError):
                 continue
             history = list(session.get("history", []))
             rows.append(
@@ -76,6 +117,16 @@ class SessionStore:
                 }
             )
         return rows
+
+    def _session_paths(self):
+        sidecar_suffixes = (
+            ".journal.jsonl.snapshot.json",
+        )
+        return [
+            path
+            for path in self.root.glob("*.json")
+            if not path.name.endswith(sidecar_suffixes)
+        ]
 
 
 def _last_final_preview(history):
