@@ -20,10 +20,20 @@ class RuntimeCheckpointsMixin:
     def prepare_workspace_change(self, tool, args):
         self._workspace_tracking_error = ""
         self._last_workspace_tracking_metadata = {}
+        self._workspace_tracking_fallback_started = None
         token = self.begin_workspace_change(tool, args) if tool.risky else None
         before = {}
-        if tool.risky and (token is None or token.mode == "opaque"):
+        needs_legacy_snapshot = tool.risky and (
+                token is None
+            or (
+                token.mode == "opaque"
+                and getattr(token, "requires_legacy_snapshot", False)
+            )
+        )
+        if needs_legacy_snapshot:
             try:
+                if token is not None and token.mode == "opaque":
+                    self._workspace_tracking_fallback_started = time.perf_counter()
                 before = self.capture_workspace_snapshot()
             except Exception as exc:
                 self._workspace_tracking_error = str(exc)
@@ -42,15 +52,21 @@ class RuntimeCheckpointsMixin:
             return [], []
         try:
             if token is not None:
-                if token.mode == "opaque":
-                    started = time.perf_counter()
+                if (
+                    token.mode == "opaque"
+                    and self._workspace_tracking_fallback_started is not None
+                ):
                     after = self.capture_workspace_snapshot()
                     outcome = self.workspace_change_tracker.finish(
                         token,
                         result,
                         legacy_before=before,
                         legacy_after=after,
-                        fallback_duration_ms=(time.perf_counter() - started) * 1000,
+                        fallback_duration_ms=(
+                            time.perf_counter()
+                            - (self._workspace_tracking_fallback_started or time.perf_counter())
+                        )
+                        * 1000,
                     )
                 else:
                     outcome = self.finish_workspace_change(token, result)

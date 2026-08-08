@@ -1,10 +1,11 @@
-"""Path-scoped workspace change tracking for transparent tools.
+"""Path-scoped workspace change tracking for risky tools.
 
-The legacy workspace snapshot hashes every file in the repository.  A
+The legacy workspace snapshot hashes every file in the repository. A
 transparent file tool already tells us its target path, so this tracker hashes
-only those paths before and after the effect. Opaque tools receive a metadata
-candidate token and use an explicit legacy fallback until a later package can
-prove a narrower production path.
+only those paths before and after the effect. Opaque tools maintain a verified
+content cache: metadata finds candidates and only candidates are rehashed.
+The cache is seeded or repaired by a conservative legacy snapshot when its
+continuity cannot be proved.
 """
 
 import hashlib
@@ -68,6 +69,7 @@ class WorkspaceChangeToken:
     mode: str = "transparent"
     before_metadata: dict[str, _PathMetadata] = field(default_factory=dict)
     metadata_errors: tuple[str, ...] = ()
+    requires_legacy_snapshot: bool = False
 
 
 class WorkspaceChangeTracker:
@@ -83,6 +85,9 @@ class WorkspaceChangeTracker:
         self.root = Path(root).resolve()
         self.last_observation = {}
         self._fallback_count = 0
+        self._content_digests = {}
+        self._cached_metadata = {}
+        self._cache_is_complete = False
 
     def begin(self, tool, args=None, *, target_paths=None):
         tool_name = str(getattr(tool, "name", tool))
@@ -100,6 +105,9 @@ class WorkspaceChangeTracker:
                 mode="opaque",
                 before_metadata=before_metadata,
                 metadata_errors=tuple(errors),
+                requires_legacy_snapshot=self._requires_legacy_snapshot(
+                    before_metadata, errors
+                ),
             )
         has_declared_targets = bool(target_paths)
         has_path_arguments = any(key in (args or {}) for key in _PATH_ARGUMENT_KEYS)
@@ -128,12 +136,16 @@ class WorkspaceChangeTracker:
             return [], []
         if token.mode == "opaque":
             after_metadata, errors = self._scan_metadata()
-            candidates, candidate_summary = self._diff_metadata(
+            candidates, _ = self._diff_metadata(
                 token.before_metadata, after_metadata
             )
             scan_errors = tuple(token.metadata_errors) + tuple(errors)
             if legacy_before is not None and legacy_after is not None:
                 self._fallback_count += 1
+                if scan_errors:
+                    self._clear_content_cache()
+                else:
+                    self._seed_content_cache(legacy_after, after_metadata)
                 self._set_observation(
                     mode="opaque",
                     candidates=candidates,
@@ -146,10 +158,18 @@ class WorkspaceChangeTracker:
                 )
                 return self._diff_snapshots(legacy_before, legacy_after)
             if scan_errors:
+                self._clear_content_cache()
                 raise WorkspaceTrackingError(
                     "opaque workspace metadata scan failed: "
                     + "; ".join(scan_errors)
                 )
+            if token.requires_legacy_snapshot:
+                raise WorkspaceTrackingError(
+                    "opaque workspace tracking requires a legacy snapshot"
+                )
+            changed, summaries = self._finish_cached_opaque(
+                token, after_metadata, candidates
+            )
             self._set_observation(
                 mode="opaque",
                 candidates=candidates,
@@ -158,7 +178,7 @@ class WorkspaceChangeTracker:
                 fallback_duration_ms=0,
                 scan_errors=(),
             )
-            return candidates, candidate_summary
+            return changed, summaries
         after = {
             path: _FileState.capture(self.root / Path(path))
             for path in token.paths
@@ -187,7 +207,70 @@ class WorkspaceChangeTracker:
             fallback_duration_ms=0,
             scan_errors=(),
         )
+        self._refresh_content_cache(token.paths, after)
         return changed, summaries
+
+    def _finish_cached_opaque(self, token, after_metadata, candidates):
+        changed = []
+        summaries = []
+        for path in candidates:
+            before_metadata = token.before_metadata.get(path)
+            after_file_metadata = after_metadata.get(path)
+            before_digest = self._content_digests.get(path)
+            if before_metadata is not None and before_digest is None:
+                self._clear_content_cache()
+                raise WorkspaceTrackingError(
+                    f"opaque workspace content cache is missing: {path}"
+                )
+            if after_file_metadata is None:
+                changed.append(path)
+                summaries.append(f"deleted:{path}")
+                self._content_digests.pop(path, None)
+                continue
+            current = _FileState.capture(self.root / Path(path))
+            self._content_digests[path] = current.digest
+            if before_metadata is None:
+                changed.append(path)
+                summaries.append(f"created:{path}")
+            elif before_digest != current.digest:
+                changed.append(path)
+                summaries.append(f"modified:{path}")
+        self._cached_metadata = dict(after_metadata)
+        return changed, summaries
+
+    def _requires_legacy_snapshot(self, metadata, errors):
+        return (
+            bool(errors)
+            or not self._cache_is_complete
+            or metadata != self._cached_metadata
+            or set(metadata) != set(self._content_digests)
+        )
+
+    def _seed_content_cache(self, digests, metadata):
+        self._content_digests = dict(digests)
+        self._cached_metadata = dict(metadata)
+        self._cache_is_complete = set(digests) == set(metadata)
+
+    def _refresh_content_cache(self, paths, states):
+        if not self._cache_is_complete:
+            return
+        for path in paths:
+            state = states[path]
+            if not state.exists:
+                self._content_digests.pop(path, None)
+                self._cached_metadata.pop(path, None)
+                continue
+            metadata = self._path_metadata(path)
+            if metadata is None:
+                self._clear_content_cache()
+                return
+            self._content_digests[path] = state.digest
+            self._cached_metadata[path] = metadata
+
+    def _clear_content_cache(self):
+        self._content_digests = {}
+        self._cached_metadata = {}
+        self._cache_is_complete = False
 
     def _scan_metadata(self):
         metadata = {}
@@ -200,19 +283,32 @@ class WorkspaceChangeTracker:
             if any(part in IGNORED_PATH_NAMES for part in relative.parts) or not path.is_file():
                 continue
             relative_path = relative.as_posix()
-            try:
-                stat = path.stat()
-            except OSError as exc:
-                errors.append(f"{relative_path}: {exc}")
+            metadata_item, error = self._metadata_for_path(relative_path)
+            if error:
+                errors.append(f"{relative_path}: {error}")
                 continue
-            metadata[relative_path] = _PathMetadata(
+            metadata[relative_path] = metadata_item
+        return metadata, errors
+
+    def _path_metadata(self, path):
+        metadata, error = self._metadata_for_path(path)
+        return None if error else metadata
+
+    def _metadata_for_path(self, path):
+        try:
+            stat = (self.root / Path(path)).stat()
+        except OSError as exc:
+            return None, str(exc)
+        return (
+            _PathMetadata(
                 size=stat.st_size,
                 mtime_ns=stat.st_mtime_ns,
                 ctime_ns=stat.st_ctime_ns,
                 inode=getattr(stat, "st_ino", 0),
                 mode=stat.st_mode,
-            )
-        return metadata, errors
+            ),
+            "",
+        )
 
     @staticmethod
     def _diff_metadata(before, after):

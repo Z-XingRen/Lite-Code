@@ -1,4 +1,4 @@
-"""Reproducible Phase 0 benchmarks for the legacy agent runtime."""
+"""Reproducible agent runtime benchmarks, including workspace tracker parity."""
 
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ from lite.core.run_store import RunStore
 from lite.core.runtime_checkpoints import RuntimeCheckpointsMixin
 from lite.core.task_state import TaskState
 from lite.core.tool_result_artifacts import prepare_tool_result_observation
+from lite.core.workspace_change_tracker import WorkspaceChangeTracker
 from lite.providers.base import ModelConversation, ModelResult, ToolCall
 from lite.testing import ScriptedModelClient
 
@@ -55,12 +56,7 @@ def _write_workspace(root: Path, file_count: int, file_bytes: int = 128) -> None
         (directory / f"file-{index:05d}.txt").write_bytes(payload)
 
 
-def _workspace_cycle(
-    runtime: SnapshotRuntime,
-    paths: list[Path],
-    changed_count: int,
-    iteration: int,
-) -> tuple[float, int, int, int]:
+def _measure_workspace_cycle(cycle) -> tuple[float, int, int, int]:
     reads = 0
     read_bytes = 0
     original_read_bytes = Path.read_bytes
@@ -75,33 +71,67 @@ def _workspace_cycle(
     started = time.perf_counter()
     Path.read_bytes = counted_read_bytes
     try:
+        changed_paths = cycle()
+    finally:
+        Path.read_bytes = original_read_bytes
+    return time.perf_counter() - started, reads, read_bytes, len(changed_paths)
+
+
+def _legacy_workspace_cycle(
+    root: Path,
+    paths: list[Path],
+    changed_count: int,
+    iteration: int,
+) -> tuple[float, int, int, int]:
+    runtime = SnapshotRuntime(root)
+
+    def cycle():
         before = runtime.capture_workspace_snapshot()
         marker = bytes([65 + (iteration % 26)])
         for path in paths[:changed_count]:
             path.write_bytes(marker * 128)
         after = runtime.capture_workspace_snapshot()
-    finally:
-        Path.read_bytes = original_read_bytes
-    changed_paths, _ = runtime.diff_workspace_snapshots(before, after)
-    return time.perf_counter() - started, reads, read_bytes, len(changed_paths)
+        return runtime.diff_workspace_snapshots(before, after)[0]
+
+    return _measure_workspace_cycle(cycle)
 
 
-def benchmark_workspace(file_count: int, runs: int) -> dict:
-    with tempfile.TemporaryDirectory(prefix="lite-wp00-workspace-") as temp_dir:
+def _incremental_workspace_cycle(
+    root: Path,
+    paths: list[Path],
+    changed_count: int,
+    iteration: int,
+) -> tuple[float, int, int, int]:
+    tracker = WorkspaceChangeTracker(root)
+    target_paths = [path.relative_to(root).as_posix() for path in paths[:changed_count]]
+
+    def cycle():
+        token = tracker.begin("write_file", target_paths=target_paths)
+        marker = bytes([65 + (iteration % 26)])
+        for path in paths[:changed_count]:
+            path.write_bytes(marker * 128)
+        return tracker.finish(token)[0]
+
+    return _measure_workspace_cycle(cycle)
+
+
+def _benchmark_workspace_variant(
+    file_count: int, runs: int, cycle, name: str, description: str
+) -> dict:
+    with tempfile.TemporaryDirectory(prefix=f"lite-{name}-workspace-") as temp_dir:
         root = Path(temp_dir)
         _write_workspace(root, file_count)
         paths = sorted(root.rglob("*.txt"))
-        runtime = SnapshotRuntime(root)
         scenarios = {}
         for changed_count in (1, 10, 100):
-            _workspace_cycle(runtime, paths, changed_count, 0)
+            cycle(root, paths, changed_count, 0)
             durations = []
             read_counts = []
             read_byte_counts = []
             observed_changes = []
             for iteration in range(1, runs + 1):
-                duration, reads, read_bytes, changes = _workspace_cycle(
-                    runtime, paths, changed_count, iteration
+                duration, reads, read_bytes, changes = cycle(
+                    root, paths, changed_count, iteration
                 )
                 durations.append(duration)
                 read_counts.append(reads)
@@ -116,13 +146,44 @@ def benchmark_workspace(file_count: int, runs: int) -> dict:
                 "observed_changed_paths": sorted(set(observed_changes)),
             }
         return {
-            "file_count": file_count,
-            "file_bytes": 128,
-            "warmup_runs": 1,
-            "measured_runs": runs,
-            "cycle": "snapshot -> mutate -> snapshot -> diff",
+            "cycle": description,
             "scenarios_by_changed_file_count": scenarios,
         }
+
+
+def benchmark_workspace(file_count: int, runs: int) -> dict:
+    legacy = _benchmark_workspace_variant(
+        file_count,
+        runs,
+        _legacy_workspace_cycle,
+        "legacy",
+        "snapshot -> mutate -> snapshot -> diff",
+    )
+    incremental = _benchmark_workspace_variant(
+        file_count,
+        runs,
+        _incremental_workspace_cycle,
+        "incremental",
+        "target digest -> mutate -> target digest -> diff",
+    )
+    legacy_single = legacy["scenarios_by_changed_file_count"]["1"]["median_ms"]
+    incremental_single = incremental["scenarios_by_changed_file_count"]["1"]["median_ms"]
+    ratio = incremental_single / legacy_single if legacy_single else 0
+    return {
+        "file_count": file_count,
+        "file_bytes": 128,
+        "warmup_runs": 1,
+        "measured_runs": runs,
+        "cycle": legacy["cycle"],
+        "scenarios_by_changed_file_count": legacy[
+            "scenarios_by_changed_file_count"
+        ],
+        "legacy": legacy,
+        "incremental": incremental,
+        "single_file_incremental_to_legacy_median_ratio": round(ratio, 4),
+        "single_file_median_ratio_limit": 0.2,
+        "single_file_median_target_met": ratio <= 0.2,
+    }
 
 
 def benchmark_session(record_count: int, recovery_runs: int = 20) -> dict:
@@ -452,7 +513,7 @@ def main() -> None:
     if args.workspace_files < 100 or args.session_records < 10 or args.runs < 2:
         raise SystemExit("benchmark scale is too small")
     payload = {
-        "schema_version": "lite.agent_runtime_baseline.v1",
+        "schema_version": "lite.agent_runtime_baseline.v2",
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "environment": {
             "python": platform.python_version(),
