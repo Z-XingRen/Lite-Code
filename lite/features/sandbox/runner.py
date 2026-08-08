@@ -1,13 +1,13 @@
 """Optional shell sandbox runner."""
 
 import os
-import subprocess
 from pathlib import Path
 from shutil import which as default_which
 
 from .checker import SandboxChecker
 from .command_matcher import command_is_excluded
 from .config import SandboxConfig
+from .process import run_cancellable_process
 
 
 if os.name == "nt":
@@ -25,13 +25,19 @@ class SandboxRunner:
         self.run_process = run
         self.emit_event = emit_event or (lambda event, payload: None)
 
-    def run(self, command, *, cwd, env, timeout):
+    def run(self, command, *, cwd, env, timeout, cancellation_token=None):
         config = self.config
         if config.mode == "off" or (
             config.mode != "required"
             and command_is_excluded(command, config.excluded_commands)
         ):
-            return self._plain(command, cwd=cwd, env=env, timeout=timeout)
+            return self._plain(
+                command,
+                cwd=cwd,
+                env=env,
+                timeout=timeout,
+                cancellation_token=cancellation_token,
+            )
 
         backend_path = SandboxChecker(self.which).backend_path(config.backend)
         if not backend_path:
@@ -45,30 +51,54 @@ class SandboxRunner:
             )
             if config.mode == "required":
                 raise RuntimeError("sandbox required but unavailable")
-            return self._plain(command, cwd=cwd, env=env, timeout=timeout)
+            return self._plain(
+                command,
+                cwd=cwd,
+                env=env,
+                timeout=timeout,
+                cancellation_token=cancellation_token,
+            )
 
         argv = self._bubblewrap_argv(backend_path, command, Path(cwd), config)
-        run_process = self.run_process or subprocess.run
-        return run_process(
-            argv, cwd=cwd, capture_output=True, text=True, timeout=timeout, env=env
+        return self._run_process(
+            argv,
+            cwd=cwd,
+            env=env,
+            timeout=timeout,
+            cancellation_token=cancellation_token,
         )
 
-    def _plain(self, command, *, cwd, env, timeout):
-        run_process = self.run_process or subprocess.run
+    def _plain(self, command, *, cwd, env, timeout, cancellation_token=None):
         kwargs = {
             "cwd": cwd,
             "shell": True,
-            "capture_output": True,
-            "text": True,
             "timeout": timeout,
             "env": env,
+            "cancellation_token": cancellation_token,
         }
         if _DEFAULT_SHELL:
             # Python resolves ``shell=True`` through %ComSpec% on Windows.
             # Keep an absolute launcher even when the child environment is
             # deliberately reduced to a strict allowlist.
             kwargs["executable"] = _DEFAULT_SHELL
-        return run_process(command, **kwargs)
+        return self._run_process(command, **kwargs)
+
+    def _run_process(self, command, **kwargs):
+        cancellation_token = kwargs.pop("cancellation_token", None)
+        if self.run_process is not None:
+            if cancellation_token is not None:
+                cancellation_token.raise_if_cancelled()
+            return self.run_process(
+                command,
+                capture_output=True,
+                text=True,
+                **kwargs,
+            )
+        return run_cancellable_process(
+            command,
+            cancellation_token=cancellation_token,
+            **kwargs,
+        )
 
     def _bubblewrap_argv(self, backend_path, command, cwd, config):
         argv = [

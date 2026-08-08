@@ -798,6 +798,10 @@ class Lite(RuntimeSecretsMixin, RuntimeCheckpointsMixin):
                 abort()
             except Exception:
                 pass
+        worker_manager = getattr(self, "worker_manager", None)
+        shutdown = getattr(worker_manager, "shutdown", None)
+        if callable(shutdown):
+            shutdown(timeout=2.0)
 
     def start_cancellation_scope(self):
         self.abort_requested = False

@@ -3,9 +3,9 @@
 import json
 import queue
 import threading
-import time
 from dataclasses import dataclass, field
 
+from .worker_cancellation import WorkerCancellationMixin
 from .worker_execution import run_background_worker, run_worker
 from .worker_inputs import clean_worker_type, clean_write_scope
 from .worker_runtime import build_child_runtime
@@ -21,10 +21,11 @@ class WorkerTask:
     runtime: object | None
     thread: threading.Thread | None = None
     stop_requested: bool = False
+    cancel_unsubscribe: object | None = None
     state: dict = field(default_factory=dict)
 
 
-class WorkerManager:
+class WorkerManager(WorkerCancellationMixin):
     def __init__(self, runtime):
         self.runtime = runtime
         self.runtime.session.setdefault("workers", {"next_id": 1, "items": []})
@@ -48,6 +49,7 @@ class WorkerManager:
             defer_runtime=background,
         )
         self._tasks[task.id] = task
+        self._prepare_run(task)
         if background:
             self._start_background(task, prompt, action="spawn")
             return self._public_payload(task, status="started")
@@ -61,6 +63,7 @@ class WorkerManager:
             raise ValueError(f"worker is running: {task_id}")
         if self.runtime.runtime_mode == "plan" and task.subagent_type != "Explore":
             raise ValueError("plan mode only allows Explore agents")
+        self._prepare_run(task)
         if self._can_run_background():
             self._start_background(task, message, action="continue")
             return self._public_payload(task, status="started")
@@ -84,31 +87,6 @@ class WorkerManager:
             "status": item["status"],
             "description": item["description"],
         }
-
-    def shutdown(self, timeout=2.0):
-        tasks = list(self._tasks.values())
-        for task in tasks:
-            item = self._get_item(task.id)
-            if item.get("status") in {"running", "stopping"}:
-                self._request_stop(task)
-                with self._lock:
-                    item["status"] = "stopping"
-                    item["updated_at"] = now()
-                self.runtime.session_event_bus.emit(
-                    "worker_stop_requested",
-                    {"worker_id": item["id"], "status": "stopping"},
-                )
-        if tasks:
-            self._save()
-        deadline = time.monotonic() + float(timeout)
-        for task in tasks:
-            thread = task.thread
-            if thread is None or not thread.is_alive():
-                continue
-            remaining = max(0.0, deadline - time.monotonic())
-            if remaining:
-                thread.join(remaining)
-        return {"stopped": sum(1 for task in tasks if task.stop_requested)}
 
     def to_dict(self):
         return {
@@ -157,12 +135,6 @@ class WorkerManager:
         )
         task.thread = thread
         thread.start()
-
-    def _request_stop(self, task):
-        task.stop_requested = True
-        abort = getattr(task.runtime, "abort_current_turn", None)
-        if callable(abort):
-            abort()
 
     def drain_notifications(self):
         drained = []

@@ -13,6 +13,7 @@ from functools import partial
 from pydantic import ValidationError
 
 from ..core.workspace import IGNORED_PATH_NAMES
+from ..features.sandbox.process import run_cancellable_process
 from . import media as media_tools
 from .base import RegisteredTool
 from .agents import (
@@ -285,18 +286,15 @@ def tool_run_shell(agent, args):
         raise ValueError("timeout must be in [1, 120]")
     runner = getattr(agent, "sandbox_runner", None)
     if runner is None:
-        result = subprocess.run(
+        result = run_cancellable_process(
             command,
             cwd=agent.root,
             shell=True,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
             timeout=timeout,
             # 这里传入的是过滤后的环境变量，而不是直接继承整个父 shell 环境，
             # 目的是减少敏感信息被意外带进命令执行环境的风险。
             env=agent.shell_env(),
+            cancellation_token=getattr(agent, "current_cancellation_token", None),
         )
     else:
         result = runner.run(
@@ -304,6 +302,7 @@ def tool_run_shell(agent, args):
             cwd=agent.root,
             env=agent.shell_env(),
             timeout=timeout,
+            cancellation_token=getattr(agent, "current_cancellation_token", None),
         )
     return textwrap.dedent(
         f"""\

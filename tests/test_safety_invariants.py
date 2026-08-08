@@ -169,7 +169,7 @@ def test_run_shell_uses_allowlisted_environment_only(tmp_path):
 def test_bound_tool_methods_call_tools_module(tmp_path):
     agent = build_agent(tmp_path, [], approval_policy="auto")
 
-    with patch("lite.tools.registry.subprocess.run") as fake_run:
+    with patch.object(agent.sandbox_runner, "run_process") as fake_run:
         fake_run.return_value = type(
             "Result",
             (),

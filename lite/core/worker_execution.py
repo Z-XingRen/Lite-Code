@@ -15,21 +15,39 @@ def run_background_worker(manager, task, prompt, action):
                 manager.runtime, task.subagent_type, task.write_scope
             )
     except Exception as exc:
+        status = "stopped" if task.stop_requested else "failed"
         item = manager._get_item(task.id)
         with manager._lock:
             item.update(
                 {
-                    "status": "failed",
-                    "result": clip(f"error: worker failed to start: {exc}", 2000),
+                    "status": status,
+                    "result": clip(
+                        "Stopped before worker execution started."
+                        if task.stop_requested
+                        else f"error: worker failed to start: {exc}",
+                        2000,
+                    ),
                     "updated_at": now(),
                 }
             )
         manager._notifications.put((task.id, render_worker_notification(item)))
         manager.runtime.session_event_bus.emit(
             "worker_finished",
-            {"worker_id": task.id, "status": "failed", "duration_ms": 0},
+            {"worker_id": task.id, "status": status, "duration_ms": 0},
         )
-        manager._save()
+        try:
+            manager._save()
+        finally:
+            manager._detach_run_cancellation(task)
+        return
+    if task.stop_requested:
+        _finish_worker(
+            manager,
+            task,
+            result="Stopped before worker execution started.",
+            status="stopped",
+            started=time.monotonic(),
+        )
         return
     run_worker(manager, task, prompt, action)
 
@@ -50,24 +68,42 @@ def run_worker(manager, task, prompt, action):
         result = task.runtime.ask(str(prompt or ""))
         status = "stopped" if task.stop_requested else "completed"
     except Exception as exc:
-        result = f"error: worker failed: {exc}"
-        status = "failed"
-    task_state = getattr(task.runtime, "current_task_state", None)
-    with manager._lock:
-        item.update(
+        if task.stop_requested:
+            result = f"Stopped after cancellation: {exc}"
+            status = "stopped"
+        else:
+            result = f"error: worker failed: {exc}"
+            status = "failed"
+    _finish_worker(manager, task, result=result, status=status, started=started)
+
+
+def _finish_worker(manager, task, *, result, status, started):
+    try:
+        item = manager._get_item(task.id)
+        task_state = getattr(task.runtime, "current_task_state", None)
+        with manager._lock:
+            item.update(
+                {
+                    "status": status,
+                    "result": clip(result, 2000),
+                    "tool_steps": int(getattr(task_state, "tool_steps", 0) or 0),
+                    "attempts": int(getattr(task_state, "attempts", 0) or 0),
+                    **collect_worker_artifacts(
+                        manager.runtime.root, task.runtime, task_state
+                    ),
+                    "duration_ms": int((time.monotonic() - started) * 1000),
+                    "updated_at": now(),
+                }
+            )
+        manager._notifications.put((task.id, render_worker_notification(item)))
+        manager.runtime.session_event_bus.emit(
+            "worker_finished",
             {
+                "worker_id": task.id,
                 "status": status,
-                "result": clip(result, 2000),
-                "tool_steps": int(getattr(task_state, "tool_steps", 0) or 0),
-                "attempts": int(getattr(task_state, "attempts", 0) or 0),
-                **collect_worker_artifacts(manager.runtime.root, task.runtime, task_state),
-                "duration_ms": int((time.monotonic() - started) * 1000),
-                "updated_at": now(),
-            }
+                "duration_ms": item["duration_ms"],
+            },
         )
-    manager._notifications.put((task.id, render_worker_notification(item)))
-    manager.runtime.session_event_bus.emit(
-        "worker_finished",
-        {"worker_id": task.id, "status": status, "duration_ms": item["duration_ms"]},
-    )
-    manager._save()
+        manager._save()
+    finally:
+        manager._detach_run_cancellation(task)
