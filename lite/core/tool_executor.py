@@ -1,14 +1,14 @@
 """Tool-call validation, authorization, execution, and evidence recording."""
 import re
-
 from .governance import record_governance_decision
+from .runtime_journal import run_tool_effect
 from .tool_failures import classify_tool_failure
 from .tool_policy import ToolPolicyChecker
 from .tool_result_artifacts import prepare_tool_result_observation
 from .tool_repetition import repeated_tool_call_metadata
 
 
-def run_tool(agent, name, args):
+def run_tool(agent, name, args, *, call_id=""):
     tool = agent.tools.get(name)
     if tool is None:
         agent._last_tool_result_metadata = _tool_result_metadata(
@@ -39,7 +39,7 @@ def run_tool(agent, name, args):
         agent._last_tool_result_metadata = repeated_tool_call_metadata(tool)
         record_governance_decision(agent, name, args, decision="deny", reason_code="repeated_identical_call", decision_type="tool_repetition")
         return f"error: repeated identical tool call for {name}; choose a different tool or return a final answer"
-    decision = agent.permission_checker.check(tool, args)
+    decision = agent.permission_checker.check(tool, args, call_id=call_id or None)
     _emit_permission_decision(agent, tool, args, decision)
     permission_reason = "read_only_violation" if not decision.allowed and getattr(agent, "read_only", False) else decision.reason
     record_governance_decision(
@@ -72,7 +72,7 @@ def run_tool(agent, name, args):
     tracking_token, before_snapshot = None, None
     try:
         tracking_token, before_snapshot = agent.prepare_workspace_change(tool, args)
-        full_result = tool.execute(args).content
+        full_result = run_tool_effect(agent, tool, args, call_id=call_id or None).content
         pending_metadata = dict(getattr(agent, "_pending_tool_result_metadata", {}) or {})
         agent._pending_tool_result_metadata = {}
         exit_code = _run_shell_exit_code(full_result) if name == "run_shell" else 0

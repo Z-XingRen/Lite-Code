@@ -31,6 +31,7 @@ from .runtime_consumers import default_runtime_consumers
 from .runtime_checkpoints import RuntimeCheckpointsMixin
 from .workspace_change_tracker import WorkspaceChangeTracker
 from .runtime_events import build_runtime_event
+from .runtime_journal import attach_runtime_journal
 from .runtime_secrets import REDACTED_VALUE, RuntimeSecretsMixin
 from .session_events import SessionEventBus
 from .session_lifecycle import clear_runtime_session, resume_runtime_session
@@ -106,6 +107,7 @@ class Lite(RuntimeSecretsMixin, RuntimeCheckpointsMixin):
         allowed_tools=None,
         final_readiness_mode="warn",
         before_final_hooks=None,
+        session_journal_writer=None,
     ):
         self.model_client = model_client
         self.model_client_factory = model_client_factory
@@ -212,6 +214,9 @@ class Lite(RuntimeSecretsMixin, RuntimeCheckpointsMixin):
         self.context_orchestrator = ContextOrchestrator(self)
         self.resume_state = self.evaluate_resume_state()
         self.session_path = self.session_store.save(self.session)
+        self.session_journal_writer = None
+        if session_journal_writer is not None:
+            self.attach_session_journal(session_journal_writer)
         self.current_task_state = None
         self.current_run_dir = None
         self.last_prompt_metadata = {}
@@ -624,8 +629,17 @@ class Lite(RuntimeSecretsMixin, RuntimeCheckpointsMixin):
         return prompt
 
     def record(self, item):
-        self.session["history"].append(self.turn_history.enrich(item))
-        self.session_path = self.session_store.save(self.session)
+        item = self.turn_history.enrich(item)
+        if self.session_journal_writer is not None:
+            self.session_journal_writer.append_history(item)
+            self.session["history"].append(item)
+            self.session_path = self.session_journal_writer.path
+        else:
+            self.session["history"].append(item)
+            self.session_path = self.session_store.save(self.session)
+
+    def attach_session_journal(self, writer):
+        return attach_runtime_journal(self, writer)
 
     def prompt_metadata(self, user_message, prompt):
         _, metadata = self._build_prompt_and_metadata(user_message)
@@ -820,8 +834,8 @@ class Lite(RuntimeSecretsMixin, RuntimeCheckpointsMixin):
     def clear_session(self):
         return clear_runtime_session(self)
 
-    def run_tool(self, name, args):
-        return tool_executor.run_tool(self, name, args)
+    def run_tool(self, name, args, *, call_id=""):
+        return tool_executor.run_tool(self, name, args, call_id=call_id)
 
     def repeated_tool_call(self, name, args):
         return is_repeated_tool_call(self.session["history"], name, args)

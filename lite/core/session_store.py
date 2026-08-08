@@ -21,6 +21,9 @@ class SessionStore:
     def event_path(self, session_id):
         return self.root / f"{_safe_session_id(session_id)}.events.jsonl"
 
+    def journal_path(self, session_id):
+        return self.root / f"{_safe_session_id(session_id)}.journal.jsonl"
+
     def save(self, session):
         path = self.path(session["id"])
         payload = json.dumps(session, indent=2)

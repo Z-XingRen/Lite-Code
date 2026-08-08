@@ -1,6 +1,7 @@
 """Engine integration for provider-neutral model stream events."""
 
 from ..providers.streaming import ModelStreamAccumulator, stream_model_events
+from .runtime_journal import model_result_payload, runtime_journal_effect
 
 _ENGINE_EVENT_TYPES = {
     "message_start": "model_stream_start",
@@ -20,23 +21,35 @@ def consume_model_stream(
     expose_stream_events = callable(
         getattr(agent.model_client, "stream_result", None)
     )
-    for event in stream_model_events(
-        agent.model_client,
-        request,
-        max_new_tokens,
-        cancellation_token=token,
-        **kwargs,
-    ):
-        payload = _engine_event_payload(event, task_state.run_id)
-        if expose_stream_events:
-            agent.session_event_bus.emit(
-                "model_stream_event",
-                {**payload, "event": event.kind},
-            )
-        accumulator.add(event)
-        if expose_stream_events and payload["type"]:
-            yield payload
-    return accumulator.finish(token)
+    with runtime_journal_effect(
+        agent,
+        "provider",
+        request={
+            "run_id": task_state.run_id,
+            "attempt": task_state.attempts,
+            "model": str(getattr(agent.model_client, "model", "")),
+            "max_new_tokens": max_new_tokens,
+        },
+    ) as journal_effect:
+        for event in stream_model_events(
+            agent.model_client,
+            request,
+            max_new_tokens,
+            cancellation_token=token,
+            **kwargs,
+        ):
+            payload = _engine_event_payload(event, task_state.run_id)
+            if expose_stream_events:
+                agent.session_event_bus.emit(
+                    "model_stream_event",
+                    {**payload, "event": event.kind},
+                )
+            accumulator.add(event)
+            if expose_stream_events and payload["type"]:
+                yield payload
+        result = accumulator.finish(token)
+        journal_effect.complete("ok", model_result_payload(agent, result))
+        return result
 
 
 def _engine_event_payload(event, run_id):

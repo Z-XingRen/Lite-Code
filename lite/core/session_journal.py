@@ -13,6 +13,7 @@ from .session_journal_schema import (
     JournalRecord,
     JournalSchemaError,
 )
+from .session_journal_writer import JournalWriterError, SessionJournalWriter
 
 __all__ = [
     "JOURNAL_SCHEMA_VERSION",
@@ -21,7 +22,9 @@ __all__ = [
     "JournalRecord",
     "JournalSchemaError",
     "JournalState",
+    "JournalWriterError",
     "OpenOperation",
+    "SessionJournalWriter",
     "reduce_journal_record",
     "replay_journal",
 ]

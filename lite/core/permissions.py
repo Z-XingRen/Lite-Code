@@ -3,6 +3,8 @@
 from dataclasses import dataclass
 from pathlib import Path
 
+from .runtime_journal import run_permission_effect
+
 
 @dataclass(frozen=True)
 class PermissionDecision:
@@ -27,7 +29,16 @@ class PermissionChecker:
     def __init__(self, runtime):
         self.runtime = runtime
 
-    def check(self, tool, args):
+    def check(self, tool, args, *, call_id=None):
+        return run_permission_effect(
+            self.runtime,
+            tool,
+            args,
+            lambda: self._decide(tool, args),
+            call_id=call_id,
+        )
+
+    def _decide(self, tool, args):
         args = args or {}
         profile = self.runtime.active_tool_profile
         if not profile.allows(tool.name):

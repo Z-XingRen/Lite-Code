@@ -45,7 +45,7 @@ def execute_tool_payload(engine, task_state, user_message, payload):
         "args": args,
     }
 
-    tool_result = agent.run_tool(name, args)
+    tool_result = agent.run_tool(name, args, call_id=call_id)
     tool_metadata = dict(agent._last_tool_result_metadata or {})
     tool_duration_ms = int((time.monotonic() - tool_started_at) * 1000)
     agent.session_event_bus.emit(

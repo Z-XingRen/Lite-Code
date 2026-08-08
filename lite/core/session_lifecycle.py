@@ -71,3 +71,7 @@ def _shutdown_workers(runtime):
     shutdown = getattr(manager, "shutdown", None)
     if callable(shutdown):
         shutdown()
+    writer = getattr(runtime, "session_journal_writer", None)
+    if writer is not None:
+        writer.close()
+        runtime.session_journal_writer = None
