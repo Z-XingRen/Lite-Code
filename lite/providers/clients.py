@@ -13,6 +13,7 @@ from ..core.content_blocks import ensure_model_input
 from .base import ModelResult, ToolCall, ensure_conversation, normalize_stop_reason
 from .errors import ProviderError, sanitize_url
 from .anthropic_streaming import decode_anthropic_stream
+from .http_cancellation import HttpResponseController
 from .openai_streaming import decode_openai_stream
 from .retry import (
     DEFAULT_RETRY_POLICY,
@@ -414,14 +415,37 @@ def _request_with_retries(
     retry_budget=2,
     *,
     cancellation_token=None,
+    response_controller=None,
 ):
     policy = RetryPolicy(max_retries=int(retry_budget))
 
     def request_body(_attempt):
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            body_text = response.read().decode("utf-8")
-            headers = getattr(response, "headers", {}) or {}
-            content_type = headers.get("Content-Type", "")
+        response = urllib.request.urlopen(request, timeout=timeout)
+        registration = (
+            response_controller.register(response, cancellation_token)
+            if response_controller is not None
+            else None
+        )
+        managed_response = callable(getattr(response, "__enter__", None))
+        response_context = response if managed_response else nullcontext(response)
+        try:
+            with response_context as body:
+                body_text = body.read().decode("utf-8")
+                headers = getattr(body, "headers", {}) or {}
+                content_type = headers.get("Content-Type", "")
+            if registration is not None:
+                registration.raise_if_cancelled()
+            if cancellation_token is not None:
+                cancellation_token.raise_if_cancelled()
+        except Exception:
+            if registration is not None:
+                registration.raise_if_cancelled()
+            if cancellation_token is not None:
+                cancellation_token.raise_if_cancelled()
+            raise
+        finally:
+            if registration is not None:
+                registration.release()
         payload = _decode_provider_error_payload(body_text)
         if payload is not None:
             raise payload
@@ -604,9 +628,16 @@ def _open_stream_with_retries(
     timeout,
     *,
     cancellation_token=None,
+    response_controller=None,
 ):
     def open_response(_attempt):
-        return urllib.request.urlopen(request, timeout=timeout)
+        response = urllib.request.urlopen(request, timeout=timeout)
+        registration = (
+            response_controller.register(response, cancellation_token)
+            if response_controller is not None
+            else None
+        )
+        return response, registration
 
     try:
         result = run_with_retries(
@@ -622,7 +653,8 @@ def _open_stream_with_retries(
             base_url,
             failure,
         ) from failure.cause
-    return result.value, _provider_metadata(
+    response, registration = result.value
+    return response, registration, _provider_metadata(
         provider,
         model,
         base_url,
@@ -671,6 +703,10 @@ class OpenAICompatibleModelClient:
         # 避免对不支持的后端传一个“看起来统一、其实没意义”的伪参数。
         self.supports_prompt_cache = any(host in self.base_url for host in ("openai.com", "right.codes"))
         self.last_completion_metadata = {}
+        self._http_responses = HttpResponseController()
+
+    def abort(self):
+        self._http_responses.abort()
 
     def complete(self, request, max_new_tokens, **kwargs):
         return self.complete_result(request, max_new_tokens, **kwargs).text
@@ -727,6 +763,7 @@ class OpenAICompatibleModelClient:
                 request,
                 self.timeout,
                 cancellation_token=cancellation_token,
+                response_controller=self._http_responses,
             )
         except ProviderError as exc:
             self.last_completion_metadata = exc.to_metadata()
@@ -852,13 +889,14 @@ class OpenAICompatibleModelClient:
         self.last_completion_metadata = metadata
 
         try:
-            response, request_metadata = _open_stream_with_retries(
+            response, response_registration, request_metadata = _open_stream_with_retries(
                 "openai",
                 self.model,
                 self.base_url,
                 http_request,
                 self.timeout,
                 cancellation_token=cancellation_token,
+                response_controller=self._http_responses,
             )
         except ProviderError as error:
             self.last_completion_metadata = error.to_metadata()
@@ -913,29 +951,33 @@ class OpenAICompatibleModelClient:
                         build_result,
                         stream_error,
                     )
-                    return
-                yield from decode_openai_stream(
-                    body,
-                    metadata=metadata,
-                    build_result=build_result,
-                    stop_reason_from_response=_openai_stop_reason,
-                    usage_metadata=usage_metadata,
-                    provider_error=stream_error,
-                    cancellation_token=cancellation_token,
-                )
+                else:
+                    yield from decode_openai_stream(
+                        body,
+                        metadata=metadata,
+                        build_result=build_result,
+                        stop_reason_from_response=_openai_stop_reason,
+                        usage_metadata=usage_metadata,
+                        provider_error=stream_error,
+                        cancellation_token=cancellation_token,
+                    )
+                response_registration.raise_if_cancelled()
+                if cancellation_token is not None:
+                    cancellation_token.raise_if_cancelled()
         except CancellationRequested:
             raise
         except ProviderError as exc:
             self.last_completion_metadata = exc.to_metadata()
             raise
         except Exception as exc:
+            response_registration.raise_if_cancelled()
+            if cancellation_token is not None:
+                cancellation_token.raise_if_cancelled()
             raise stream_error(
                 "OpenAI-compatible stream failed", cause=exc
             ) from exc
         finally:
-            close = getattr(response, "close", None)
-            if callable(close):
-                close()
+            response_registration.release()
 
     def _json_stream_fallback(
         self,
@@ -991,6 +1033,10 @@ class AnthropicCompatibleModelClient:
         self.reasoning_effort = str(reasoning_effort or "").strip().lower()
         self.supports_prompt_cache = False
         self.last_completion_metadata = {}
+        self._http_responses = HttpResponseController()
+
+    def abort(self):
+        self._http_responses.abort()
 
     def complete(self, request, max_new_tokens, **kwargs):
         return self.complete_result(request, max_new_tokens, **kwargs).text
@@ -1043,6 +1089,7 @@ class AnthropicCompatibleModelClient:
                 request,
                 self.timeout,
                 cancellation_token=cancellation_token,
+                response_controller=self._http_responses,
             )
         except ProviderError as exc:
             self.last_completion_metadata = exc.to_metadata()
@@ -1148,13 +1195,14 @@ class AnthropicCompatibleModelClient:
         self.last_completion_metadata = metadata
 
         try:
-            response, request_metadata = _open_stream_with_retries(
+            response, response_registration, request_metadata = _open_stream_with_retries(
                 "anthropic",
                 self.model,
                 self.base_url,
                 http_request,
                 self.timeout,
                 cancellation_token=cancellation_token,
+                response_controller=self._http_responses,
             )
         except ProviderError as error:
             self.last_completion_metadata = error.to_metadata()
@@ -1188,24 +1236,28 @@ class AnthropicCompatibleModelClient:
                     yield from self._json_stream_fallback(
                         body, metadata, request_metadata, stream_error
                     )
-                    return
-                yield from decode_anthropic_stream(
-                    body,
-                    metadata=metadata,
-                    provider_error=stream_error,
-                    cancellation_token=cancellation_token,
-                )
+                else:
+                    yield from decode_anthropic_stream(
+                        body,
+                        metadata=metadata,
+                        provider_error=stream_error,
+                        cancellation_token=cancellation_token,
+                    )
+                response_registration.raise_if_cancelled()
+                if cancellation_token is not None:
+                    cancellation_token.raise_if_cancelled()
         except CancellationRequested:
             raise
         except ProviderError as exc:
             self.last_completion_metadata = exc.to_metadata()
             raise
         except Exception as exc:
+            response_registration.raise_if_cancelled()
+            if cancellation_token is not None:
+                cancellation_token.raise_if_cancelled()
             raise stream_error("Anthropic-compatible stream failed", cause=exc) from exc
         finally:
-            close = getattr(response, "close", None)
-            if callable(close):
-                close()
+            response_registration.release()
 
     def _json_stream_fallback(self, response, metadata, request_metadata, stream_error):
         try:
