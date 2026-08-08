@@ -94,7 +94,7 @@ class CompactManager:
             compact_call_usage=compact_call_usage,
         )
         self.agent.session.setdefault("compactions", []).append(self._persistent_summary(summary))
-        self.agent.session_path = self.agent.session_store.save(self.agent.session)
+        self.agent.persist_session(replace_history=True)
         self.agent.session_event_bus.emit("compaction_created", summary)
         if self.agent.current_task_state:
             self.agent.emit_trace(self.agent.current_task_state, "compaction_finished", summary)

@@ -14,6 +14,7 @@ class SessionStore:
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
+        self._runtime_journal_owners = {}
 
     def path(self, session_id):
         return self.root / f"{_safe_session_id(session_id)}.json"
@@ -81,28 +82,30 @@ class SessionStore:
             return json.loads(self.path(session_id).read_text(encoding="utf-8"))
 
     def latest(self):
-        files = sorted(self._session_paths(), key=lambda path: path.stat().st_mtime)
-        return files[-1].stem if files else None
+        entries = sorted(
+            self._session_entries(), key=lambda item: item[1].stat().st_mtime
+        )
+        return entries[-1][0] if entries else None
 
     def list_sessions(self):
         rows = []
-        for index, path in enumerate(
+        for index, (session_id, path) in enumerate(
             sorted(
-                self._session_paths(),
-                key=lambda item: item.stat().st_mtime,
+                self._session_entries(),
+                key=lambda item: item[1].stat().st_mtime,
                 reverse=True,
             ),
             start=1,
         ):
             try:
-                session = self.load(path.stem)
+                session = self.load(session_id)
             except (OSError, ValueError, RuntimeError):
                 continue
             history = list(session.get("history", []))
             rows.append(
                 {
                     "index": index,
-                    "id": str(session.get("id", path.stem)),
+                    "id": str(session.get("id", session_id)),
                     "created_at": str(session.get("created_at", "")),
                     "updated_at": datetime.fromtimestamp(
                         path.stat().st_mtime
@@ -127,6 +130,27 @@ class SessionStore:
             for path in self.root.glob("*.json")
             if not path.name.endswith(sidecar_suffixes)
         ]
+
+    def _session_entries(self):
+        session_ids = {path.stem for path in self._session_paths()}
+        suffix = ".journal.jsonl"
+        for path in self.root.glob(f"*{suffix}"):
+            session_id = path.name[: -len(suffix)]
+            if self.authority_path(session_id).exists():
+                session_ids.add(session_id)
+        entries = []
+        for session_id in session_ids:
+            try:
+                path = (
+                    self.journal_path(session_id)
+                    if self.session_authority(session_id) == "journal"
+                    else self.path(session_id)
+                )
+            except (ValueError, RuntimeError):
+                continue
+            if path.exists():
+                entries.append((session_id, path))
+        return entries
 
 
 def _last_final_preview(history):

@@ -16,6 +16,7 @@ from lite import Lite, SessionStore, WorkspaceContext
 from lite.core.engine_helpers import execute_native_tool_calls
 from lite.core.run_store import RunStore
 from lite.core.runtime_checkpoints import RuntimeCheckpointsMixin
+from lite.core.session_journal import SessionJournalWriter
 from lite.core.task_state import TaskState
 from lite.core.tool_result_artifacts import prepare_tool_result_observation
 from lite.core.workspace_change_tracker import WorkspaceChangeTracker
@@ -186,46 +187,112 @@ def benchmark_workspace(file_count: int, runs: int) -> dict:
     }
 
 
-def benchmark_session(record_count: int, recovery_runs: int = 20) -> dict:
-    with tempfile.TemporaryDirectory(prefix="lite-wp00-session-") as temp_dir:
-        store = SessionStore(Path(temp_dir) / "sessions")
-        session = {
-            "id": "wp00-baseline",
-            "created_at": "2026-08-07T00:00:00+00:00",
-            "workspace_root": temp_dir,
-            "history": [],
-        }
-        append_durations = []
-        cumulative_write_bytes = 0
+def _session_record(index: int) -> dict:
+    return {
+        "role": "assistant" if index % 2 else "user",
+        "content": f"record-{index:04d}-" + ("x" * 256),
+        "event_id": f"event_{index:06d}",
+    }
+
+
+def _session_seed(session_id: str, workspace_root: str) -> dict:
+    return {
+        "id": session_id,
+        "created_at": "2026-08-07T00:00:00+00:00",
+        "workspace_root": workspace_root,
+        "history": [],
+    }
+
+
+def _measure_session_recovery(store, session_id, record_count, recovery_runs):
+    durations = []
+    for _ in range(recovery_runs):
+        started = time.perf_counter()
+        loaded = store.load(session_id)
+        durations.append(time.perf_counter() - started)
+        if len(loaded["history"]) != record_count:
+            raise RuntimeError("session recovery returned an incomplete history")
+    return timing_summary(durations)
+
+
+def _benchmark_legacy_session(root, record_count, recovery_runs):
+    store = SessionStore(root / "legacy")
+    session = _session_seed("legacy-baseline", str(root))
+    append_durations = []
+    cumulative_write_bytes = 0
+    path = store.save(session)
+    for index in range(record_count):
+        session["history"].append(_session_record(index))
+        started = time.perf_counter()
+        path = store.save(session)
+        append_durations.append(time.perf_counter() - started)
+        cumulative_write_bytes += path.stat().st_size
+    return {
+        "append": timing_summary(append_durations),
+        "cumulative_write_bytes": cumulative_write_bytes,
+        "final_session_bytes": path.stat().st_size,
+        "recovery": _measure_session_recovery(
+            store, session["id"], record_count, recovery_runs
+        ),
+        "persistence_mode": "full JSON rewrite per append",
+    }
+
+
+def _benchmark_journal_session(root, record_count, recovery_runs):
+    store = SessionStore(root / "journal")
+    session = _session_seed("journal-baseline", str(root))
+    store.save(session)
+    started = time.perf_counter()
+    migration = store.migrate_session(session["id"])
+    migration_seconds = time.perf_counter() - started
+    writer = SessionJournalWriter.open(store.journal_path(session["id"]))
+    append_durations = []
+    cumulative_write_bytes = 0
+    snapshot_seconds = 0.0
+    try:
         for index in range(record_count):
-            session["history"].append(
-                {
-                    "role": "assistant" if index % 2 else "user",
-                    "content": f"record-{index:04d}-" + ("x" * 256),
-                    "event_id": f"event_{index:06d}",
-                }
-            )
+            before_size = writer.path.stat().st_size
             started = time.perf_counter()
-            path = store.save(session)
+            writer.append_history(_session_record(index))
             append_durations.append(time.perf_counter() - started)
-            cumulative_write_bytes += path.stat().st_size
+            cumulative_write_bytes += writer.path.stat().st_size - before_size
+        started = time.perf_counter()
+        writer.write_snapshot()
+        snapshot_seconds = time.perf_counter() - started
+        final_session_bytes = writer.path.stat().st_size
+    finally:
+        writer.close()
+    return {
+        "append": timing_summary(append_durations),
+        "cumulative_write_bytes": cumulative_write_bytes,
+        "final_session_bytes": final_session_bytes,
+        "recovery": _measure_session_recovery(
+            store, session["id"], record_count, recovery_runs
+        ),
+        "snapshot": timing_summary([snapshot_seconds]),
+        "migration": timing_summary([migration_seconds]),
+        "migration_baseline_sequence": migration.baseline_sequence,
+        "persistence_mode": "append-only JSONL records",
+    }
 
-        recovery_durations = []
-        for _ in range(recovery_runs):
-            started = time.perf_counter()
-            loaded = store.load(session["id"])
-            recovery_durations.append(time.perf_counter() - started)
-            if len(loaded["history"]) != record_count:
-                raise RuntimeError("session recovery returned an incomplete history")
 
+def benchmark_session(record_count: int, recovery_runs: int = 20) -> dict:
+    with tempfile.TemporaryDirectory(prefix="lite-session-comparison-") as temp_dir:
+        root = Path(temp_dir)
+        legacy = _benchmark_legacy_session(root, record_count, recovery_runs)
+        journal = _benchmark_journal_session(root, record_count, recovery_runs)
+        byte_ratio = (
+            journal["cumulative_write_bytes"] / legacy["cumulative_write_bytes"]
+            if legacy["cumulative_write_bytes"]
+            else 0
+        )
         return {
             "history_records": record_count,
             "record_content_chars": 268,
-            "append": timing_summary(append_durations),
-            "cumulative_write_bytes": cumulative_write_bytes,
-            "final_session_bytes": path.stat().st_size,
-            "recovery": timing_summary(recovery_durations),
-            "persistence_mode": "full JSON rewrite per append",
+            **legacy,
+            "legacy": legacy,
+            "journal": journal,
+            "journal_to_legacy_cumulative_write_ratio": round(byte_ratio, 4),
         }
 
 

@@ -5,6 +5,7 @@ from datetime import datetime
 
 from ..features import memory as memorylib
 from .plan_mode import PlanModeController
+from .runtime_journal import open_runtime_journal
 from .session_events import SessionEventBus
 from .todo_ledger import TodoLedger
 from .worker_manager import WorkerManager
@@ -58,7 +59,14 @@ def _rebind(runtime, emit_started):
         else "default"
     )
     runtime.resume_state = runtime.evaluate_resume_state()
-    runtime.session_path = runtime.session_store.save(runtime.session)
+    session_id = runtime.session["id"]
+    if runtime.session_store.session_authority(session_id) == "journal":
+        writer = open_runtime_journal(runtime)
+        runtime.attach_session_journal(writer)
+    elif runtime.session_store.path(session_id).exists():
+        runtime.session_path = runtime.session_store.path(session_id)
+    else:
+        runtime.session_path = runtime.session_store.save(runtime.session)
     runtime.current_turn_id = ""
     runtime.current_run_id = ""
     runtime.current_run_dir = None

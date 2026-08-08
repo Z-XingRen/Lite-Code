@@ -155,7 +155,7 @@ class Engine:
                 # mode), so advertise the current native tool set each call.
                 conversation.tools = agent.model_tools()
             if commit_proposed_replacements(agent.session, prompt_metadata):
-                agent.session_path = agent.session_store.save(agent.session)
+                agent.persist_session(replace_history=True)
             agent.emit_trace(
                 task_state,
                 "prompt_built",

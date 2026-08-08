@@ -995,7 +995,7 @@ def _truncate_read_history(agent):
         else:
             updated.append(item)
     agent.session["history"] = updated
-    agent.session_path = agent.session_store.save(agent.session)
+    agent.persist_session(replace_history=True)
 
 
 def _build_real_agent(workspace_root, provider, approval_policy="auto", read_only=False):

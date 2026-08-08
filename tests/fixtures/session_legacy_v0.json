@@ -1,0 +1,15 @@
+{
+  "id": "legacy-v0-session",
+  "created_at": "2025-12-31T23:59:59+00:00",
+  "workspace_root": "C:/legacy-workspace",
+  "history": [
+    {
+      "role": "user",
+      "content": "continue the legacy session"
+    }
+  ],
+  "memory": {
+    "working": [],
+    "durable": []
+  }
+}

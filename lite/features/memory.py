@@ -364,9 +364,16 @@ def list_sessions_since(since_ts, sessions_dir=None, current_session_id=""):
         return []
     result = set()
     for path in scan_dir.iterdir():
-        if path.suffix not in {".json", ".jsonl"}:
+        if path.name.endswith(".events.jsonl"):
+            session_id = path.name[: -len(".events.jsonl")]
+        elif path.name.endswith(".journal.jsonl"):
+            session_id = path.name[: -len(".journal.jsonl")]
+        elif path.suffix == ".json" and not path.name.endswith(
+            ".journal.jsonl.snapshot.json"
+        ):
+            session_id = path.stem
+        else:
             continue
-        session_id = path.stem.removesuffix(".events")
         if current_session_id and current_session_id == session_id:
             continue
         if path.stat().st_mtime > since_ts:

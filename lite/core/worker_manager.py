@@ -175,9 +175,7 @@ class WorkerManager(WorkerCancellationMixin):
         }
 
     def _save(self):
-        self.runtime.session_path = self.runtime.session_store.save(
-            self.runtime.session
-        )
+        self.runtime.persist_session()
 
 
 def dumps_payload(payload):

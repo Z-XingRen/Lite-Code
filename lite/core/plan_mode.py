@@ -32,9 +32,7 @@ class PlanModeManager:
             "plan_path": plan_path,
         }
         self.runtime.set_tool_profile("plan")
-        self.runtime.session_path = self.runtime.session_store.save(
-            self.runtime.session
-        )
+        self.runtime.persist_session()
         self.runtime.refresh_prefix(force=True)
         self.runtime.session_event_bus.emit(
             "runtime_mode_changed",
@@ -46,9 +44,7 @@ class PlanModeManager:
         previous = dict(self.state)
         self.runtime.session["runtime_mode"] = {"mode": "default"}
         self.runtime.set_tool_profile("default")
-        self.runtime.session_path = self.runtime.session_store.save(
-            self.runtime.session
-        )
+        self.runtime.persist_session()
         self.runtime.refresh_prefix(force=True)
         self.runtime.session_event_bus.emit(
             "runtime_mode_changed",

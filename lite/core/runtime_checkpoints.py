@@ -145,5 +145,5 @@ class RuntimeCheckpointsMixin:
         state["current_id"] = checkpoint_id
         task_state.checkpoint_id = checkpoint_id
         self.session["runtime_identity"] = checkpoint["runtime_identity"]
-        self.session_path = self.session_store.save(self.session)
+        self.persist_session()
         return checkpoint

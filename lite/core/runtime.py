@@ -31,7 +31,11 @@ from .runtime_consumers import default_runtime_consumers
 from .runtime_checkpoints import RuntimeCheckpointsMixin
 from .workspace_change_tracker import WorkspaceChangeTracker
 from .runtime_events import build_runtime_event
-from .runtime_journal import attach_runtime_journal
+from .runtime_journal import (
+    attach_runtime_journal,
+    open_runtime_journal,
+    synchronize_runtime_session,
+)
 from .runtime_secrets import REDACTED_VALUE, RuntimeSecretsMixin
 from .session_events import SessionEventBus
 from .session_lifecycle import clear_runtime_session, resume_runtime_session
@@ -213,10 +217,16 @@ class Lite(RuntimeSecretsMixin, RuntimeCheckpointsMixin):
         )
         self.context_orchestrator = ContextOrchestrator(self)
         self.resume_state = self.evaluate_resume_state()
-        self.session_path = self.session_store.save(self.session)
         self.session_journal_writer = None
         if session_journal_writer is not None:
             self.attach_session_journal(session_journal_writer)
+        elif self.session_store.session_authority(self.session["id"]) == "journal":
+            writer = open_runtime_journal(self)
+            self.attach_session_journal(writer)
+        elif self.session_store.path(self.session["id"]).exists():
+            self.session_path = self.session_store.path(self.session["id"])
+        else:
+            self.session_path = self.session_store.save(self.session)
         self.current_task_state = None
         self.current_run_dir = None
         self.last_prompt_metadata = {}
@@ -630,16 +640,17 @@ class Lite(RuntimeSecretsMixin, RuntimeCheckpointsMixin):
 
     def record(self, item):
         item = self.turn_history.enrich(item)
-        if self.session_journal_writer is not None:
-            self.session_journal_writer.append_history(item)
-            self.session["history"].append(item)
-            self.session_path = self.session_journal_writer.path
-        else:
-            self.session["history"].append(item)
-            self.session_path = self.session_store.save(self.session)
+        self.session["history"].append(item)
+        self.session_path = synchronize_runtime_session(self)
 
     def attach_session_journal(self, writer):
         return attach_runtime_journal(self, writer)
+
+    def persist_session(self, *, replace_history=False):
+        self.session_path = synchronize_runtime_session(
+            self, replace_history=replace_history
+        )
+        return self.session_path
 
     def prompt_metadata(self, user_message, prompt):
         _, metadata = self._build_prompt_and_metadata(user_message)
@@ -920,7 +931,7 @@ class Lite(RuntimeSecretsMixin, RuntimeCheckpointsMixin):
             self.session["memory"], workspace_root=self.root
         )
         self.self_authored_file_freshness.clear()
-        self.session_store.save(self.session)
+        self.persist_session(replace_history=True)
 
     def path(self, raw_path):
         path = Path(raw_path)

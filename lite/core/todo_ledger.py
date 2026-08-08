@@ -74,7 +74,7 @@ class TodoLedger:
         if task_state is not None:
             task_state.todo_changes.append(payload)
         self.runtime.session_event_bus.emit("todo_changed", payload)
-        self.runtime.session_path = self.runtime.session_store.save(self.runtime.session)
+        self.runtime.persist_session()
 
 
 def _clean_status(value):
