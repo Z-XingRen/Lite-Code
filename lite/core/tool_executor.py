@@ -68,16 +68,16 @@ def run_tool(agent, name, args):
         )
         agent.record_process_note_for_tool(name, agent._last_tool_result_metadata)
         return policy.message
-    before_snapshot = agent.capture_workspace_snapshot() if tool.risky else {}
-    after_snapshot = before_snapshot
+    tracking_token, before_snapshot = agent.prepare_workspace_change(tool, args)
     try:
         full_result = tool.execute(args).content
         pending_metadata = dict(getattr(agent, "_pending_tool_result_metadata", {}) or {})
         agent._pending_tool_result_metadata = {}
         exit_code = _run_shell_exit_code(full_result) if name == "run_shell" else 0
         result, artifact_metadata = prepare_tool_result_observation(agent, name, full_result)
-        after_snapshot = agent.capture_workspace_snapshot() if tool.risky else before_snapshot
-        affected_paths, diff_summary = agent.diff_workspace_snapshots(before_snapshot, after_snapshot)
+        affected_paths, diff_summary = agent.complete_workspace_change(
+            tool, tracking_token, before_snapshot, full_result
+        )
         workspace_changed = bool(affected_paths)
         tool_status = "ok"
         tool_error_code = ""
@@ -98,8 +98,9 @@ def run_tool(agent, name, args):
         agent.record_process_note_for_tool(name, agent._last_tool_result_metadata)
         return result
     except Exception as exc:
-        after_snapshot = agent.capture_workspace_snapshot() if tool.risky else before_snapshot
-        affected_paths, diff_summary = agent.diff_workspace_snapshots(before_snapshot, after_snapshot)
+        affected_paths, diff_summary = agent.complete_workspace_change(
+            tool, tracking_token, before_snapshot
+        )
         workspace_changed = bool(affected_paths)
         security_event_type = "path_escape" if "path escapes workspace" in str(exc) else ""
         if name == "run_shell" and "sandbox required but unavailable" in str(exc):
@@ -120,7 +121,6 @@ def run_tool(agent, name, args):
         )
         agent.record_process_note_for_tool(name, agent._last_tool_result_metadata)
         return f"error: tool {name} failed: {exc}"
-
 
 def _run_shell_exit_code(result):
     match = re.search(r"exit_code:\s*(-?\d+)", str(result))

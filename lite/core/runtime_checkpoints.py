@@ -10,6 +10,23 @@ CHECKPOINT_SCHEMA_VERSION = "phase1-v1"
 
 
 class RuntimeCheckpointsMixin:
+    def begin_workspace_change(self, tool, args):
+        return self.workspace_change_tracker.begin(tool, args)
+
+    def finish_workspace_change(self, token, result=None):
+        return self.workspace_change_tracker.finish(token, result)
+
+    def prepare_workspace_change(self, tool, args):
+        token = self.begin_workspace_change(tool, args) if tool.risky else None
+        before = self.capture_workspace_snapshot() if tool.risky and token is None else {}
+        return token, before
+
+    def complete_workspace_change(self, tool, token, before, result=None):
+        if token is not None:
+            return self.finish_workspace_change(token, result)
+        after = self.capture_workspace_snapshot() if tool.risky else before
+        return self.diff_workspace_snapshots(before, after)
+
     def capture_workspace_snapshot(self):
         snapshot = {}
         for path in self.root.rglob("*"):

@@ -28,6 +28,7 @@ from .permissions import PermissionChecker
 from .run_store import RunStore
 from .runtime_consumers import default_runtime_consumers
 from .runtime_checkpoints import RuntimeCheckpointsMixin
+from .workspace_change_tracker import WorkspaceChangeTracker
 from .runtime_events import build_runtime_event
 from .runtime_secrets import REDACTED_VALUE, RuntimeSecretsMixin
 from .session_events import SessionEventBus
@@ -119,6 +120,7 @@ class Lite(RuntimeSecretsMixin, RuntimeCheckpointsMixin):
         )
         self.workspace = workspace
         self.root = Path(workspace.repo_root)
+        self.workspace_change_tracker = WorkspaceChangeTracker(self.root)
         self.session_store = session_store
         self.approval_policy = approval_policy
         self.max_steps = max_steps
