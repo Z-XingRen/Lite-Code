@@ -13,6 +13,7 @@ from ..cancellation import CancellationRequested
 from ..core.content_blocks import ensure_model_input
 from .base import ModelResult, ToolCall, ensure_conversation, normalize_stop_reason
 from .errors import ProviderError, sanitize_url
+from .anthropic_streaming import decode_anthropic_stream
 from .openai_streaming import decode_openai_stream
 from .streaming import ModelStreamEvent
 
@@ -319,6 +320,40 @@ def _anthropic_tool_definitions(conversation):
             definition["strict"] = True
         tools.append(definition)
     return tools
+
+
+def _anthropic_result(data, metadata, model, base_url, request_metadata):
+    content = tuple(
+        copy.deepcopy(item)
+        for item in (data.get("content") or [])
+        if isinstance(item, dict)
+    )
+    texts = []
+    calls = []
+    for item in content:
+        if item.get("type") == "text" and isinstance(item.get("text"), str):
+            texts.append(item["text"])
+        elif item.get("type") == "tool_use":
+            calls.append(
+                ToolCall(
+                    call_id=str(item.get("id") or ""),
+                    name=str(item.get("name") or ""),
+                    arguments=_tool_arguments(
+                        item.get("input", {}),
+                        "anthropic",
+                        model,
+                        base_url,
+                        request_metadata,
+                    ),
+                )
+            )
+    return ModelResult(
+        text="\n".join(texts).strip(),
+        tool_calls=tuple(calls),
+        stop_reason=normalize_stop_reason(data.get("stop_reason")),
+        continuation=content,
+        metadata=metadata,
+    )
 
 
 def _strict_openai_schema(schema):
@@ -916,36 +951,12 @@ class AnthropicCompatibleModelClient:
             **request_metadata,
             **_extract_usage_cache_details(data),
         }
-        content = tuple(
-            copy.deepcopy(item)
-            for item in (data.get("content") or [])
-            if isinstance(item, dict)
-        )
-        texts = []
-        calls = []
-        for item in content:
-            if item.get("type") == "text" and isinstance(item.get("text"), str):
-                texts.append(item["text"])
-            elif item.get("type") == "tool_use":
-                calls.append(
-                    ToolCall(
-                        call_id=str(item.get("id") or ""),
-                        name=str(item.get("name") or ""),
-                        arguments=_tool_arguments(
-                            item.get("input", {}),
-                            "anthropic",
-                            self.model,
-                            self.base_url,
-                            request_metadata,
-                        ),
-                    )
-                )
-        result = ModelResult(
-            text="\n".join(texts).strip(),
-            tool_calls=tuple(calls),
-            stop_reason=normalize_stop_reason(data.get("stop_reason")),
-            continuation=content,
-            metadata=self.last_completion_metadata,
+        result = _anthropic_result(
+            data,
+            self.last_completion_metadata,
+            self.model,
+            self.base_url,
+            request_metadata,
         )
         if result.text or result.tool_calls:
             return result
@@ -959,3 +970,165 @@ class AnthropicCompatibleModelClient:
         )
         self.last_completion_metadata = error.to_metadata()
         raise error
+
+    def stream_result(
+        self,
+        request,
+        max_new_tokens,
+        *,
+        cancellation_token=None,
+        prompt_cache_key=None,
+        prompt_cache_retention=None,
+        **kwargs,
+    ):
+        """Stream Anthropic Messages SSE as provider-neutral model events."""
+
+        del prompt_cache_key, prompt_cache_retention, kwargs
+        if cancellation_token is not None:
+            cancellation_token.raise_if_cancelled()
+        self.last_completion_metadata = {}
+        conversation = ensure_conversation(request)
+        messages, image_input_count = _anthropic_conversation_messages(conversation)
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "max_tokens": max_new_tokens,
+            "stream": True,
+        }
+        if conversation.tools:
+            payload["tools"] = _anthropic_tool_definitions(conversation)
+        if self.temperature is not None:
+            payload["temperature"] = self.temperature
+        if self.reasoning_effort:
+            payload["output_config"] = {"effort": self.reasoning_effort}
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream",
+            "anthropic-version": "2023-06-01",
+        }
+        if self.api_key:
+            headers["x-api-key"] = self.api_key
+        http_request = urllib.request.Request(
+            self.base_url + "/messages",
+            data=json.dumps(payload).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        request_metadata = _provider_metadata(
+            "anthropic", self.model, self.base_url, attempts=1, retry_count=0
+        )
+        metadata = {"image_input_count": image_input_count, **request_metadata}
+        self.last_completion_metadata = metadata
+
+        try:
+            response = urllib.request.urlopen(http_request, timeout=self.timeout)
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            error = ProviderError(
+                f"anthropic provider request failed with HTTP {exc.code}",
+                provider="anthropic",
+                model=self.model,
+                base_url=self.base_url,
+                code=_http_error_code(exc.code),
+                http_status=exc.code,
+                retryable=exc.code in RETRYABLE_HTTP_STATUS or exc.code >= 500,
+                attempts=1,
+                retry_count=0,
+                body_excerpt=body,
+                cause_type=type(exc).__name__,
+            )
+            self.last_completion_metadata = error.to_metadata()
+            raise error from exc
+        except (
+            urllib.error.URLError,
+            RemoteDisconnected,
+            TimeoutError,
+            socket.timeout,
+        ) as exc:
+            error = ProviderError(
+                "anthropic provider request failed before a valid response",
+                provider="anthropic",
+                model=self.model,
+                base_url=self.base_url,
+                code=_transport_error_code(exc),
+                retryable=True,
+                attempts=1,
+                retry_count=0,
+                cause_type=type(exc).__name__,
+            )
+            self.last_completion_metadata = error.to_metadata()
+            raise error from exc
+
+        def stream_error(message, *, cause=None):
+            error = _provider_failure(
+                "anthropic",
+                self.model,
+                self.base_url,
+                "provider_error",
+                message,
+                metadata,
+                cause=cause,
+            )
+            self.last_completion_metadata = error.to_metadata()
+            return error
+
+        managed_response = callable(getattr(response, "__enter__", None))
+        response_context = response if managed_response else nullcontext(response)
+        try:
+            with response_context as body:
+                content_type = (getattr(body, "headers", {}) or {}).get(
+                    "Content-Type", ""
+                )
+                if content_type and not content_type.startswith(
+                    "text/event-stream"
+                ):
+                    yield from self._json_stream_fallback(
+                        body, metadata, request_metadata, stream_error
+                    )
+                    return
+                yield from decode_anthropic_stream(
+                    body,
+                    metadata=metadata,
+                    provider_error=stream_error,
+                    cancellation_token=cancellation_token,
+                )
+        except CancellationRequested:
+            raise
+        except ProviderError as exc:
+            self.last_completion_metadata = exc.to_metadata()
+            raise
+        except Exception as exc:
+            raise stream_error("Anthropic-compatible stream failed", cause=exc) from exc
+        finally:
+            close = getattr(response, "close", None)
+            if callable(close):
+                close()
+
+    def _json_stream_fallback(self, response, metadata, request_metadata, stream_error):
+        try:
+            data = json.loads(response.read().decode("utf-8"))
+        except json.JSONDecodeError as exc:
+            raise stream_error(
+                "Anthropic-compatible stream returned invalid JSON", cause=exc
+            ) from exc
+        if data.get("error"):
+            raise stream_error(f"Anthropic-compatible error: {data['error']}")
+        usage = _extract_usage_cache_details(data)
+        metadata.update(usage)
+        result = _anthropic_result(
+            data, metadata, self.model, self.base_url, request_metadata
+        )
+        if not result.text and not result.tool_calls:
+            raise stream_error(
+                "Anthropic-compatible error: could not extract text from response"
+            )
+        yield ModelStreamEvent(kind="message_start", metadata=dict(metadata))
+        if data.get("usage"):
+            yield ModelStreamEvent(kind="usage", metadata=usage)
+        yield ModelStreamEvent(
+            kind="done",
+            stop_reason=result.stop_reason,
+            continuation=tuple(result.continuation or ()),
+            metadata=dict(metadata),
+            result=result,
+        )
