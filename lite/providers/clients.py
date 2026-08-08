@@ -4,13 +4,17 @@ import copy
 import json
 import socket
 import time
+from contextlib import nullcontext
 from http.client import RemoteDisconnected
 import urllib.error
 import urllib.request
 
+from ..cancellation import CancellationRequested
 from ..core.content_blocks import ensure_model_input
 from .base import ModelResult, ToolCall, ensure_conversation, normalize_stop_reason
 from .errors import ProviderError, sanitize_url
+from .openai_streaming import decode_openai_stream
+from .streaming import ModelStreamEvent
 
 OPENAI_COMPATIBLE_USER_AGENT = "lite/0.1"
 RETRYABLE_HTTP_STATUS = {408, 409, 425, 429, 500, 502, 503, 504}
@@ -165,6 +169,9 @@ def _openai_result(data, metadata, provider, model, base_url):
 
 def _openai_stop_reason(data):
     raw = data.get("status") or data.get("stop_reason")
+    if str(raw or "").lower() in {"incomplete", "in_progress"}:
+        details = data.get("incomplete_details") or {}
+        raw = details.get("reason") or raw
     if not raw:
         choices = data.get("choices") or []
         if choices and isinstance(choices[0], dict):
@@ -608,6 +615,204 @@ class OpenAICompatibleModelClient:
         )
         self.last_completion_metadata = error.to_metadata()
         raise error
+
+    def stream_result(
+        self,
+        request,
+        max_new_tokens,
+        *,
+        cancellation_token=None,
+        prompt_cache_key=None,
+        prompt_cache_retention=None,
+        **kwargs,
+    ):
+        """Stream OpenAI Responses SSE as provider-neutral model events."""
+
+        del kwargs
+        if cancellation_token is not None:
+            cancellation_token.raise_if_cancelled()
+        self.last_completion_metadata = {}
+        conversation = ensure_conversation(request)
+        input_items, image_input_count = _openai_conversation_input(conversation)
+        payload = {
+            "model": self.model,
+            "input": input_items,
+            "max_output_tokens": max_new_tokens,
+            "stream": True,
+        }
+        if conversation.tools:
+            payload["tools"] = _openai_tool_definitions(conversation)
+        if self.temperature is not None:
+            payload["temperature"] = self.temperature
+        if self.reasoning_effort:
+            payload["reasoning"] = {"effort": self.reasoning_effort}
+        if self.supports_prompt_cache and prompt_cache_key:
+            payload["prompt_cache_key"] = prompt_cache_key
+        if self.supports_prompt_cache and prompt_cache_retention:
+            payload["prompt_cache_retention"] = prompt_cache_retention
+
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream",
+            "Cache-Control": "no-cache",
+            "User-Agent": OPENAI_COMPATIBLE_USER_AGENT,
+        }
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        http_request = urllib.request.Request(
+            self.base_url + "/responses",
+            data=json.dumps(payload).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        request_metadata = _provider_metadata(
+            "openai", self.model, self.base_url, attempts=1, retry_count=0
+        )
+        metadata = {
+            "prompt_cache_supported": self.supports_prompt_cache,
+            "prompt_cache_key": prompt_cache_key,
+            "prompt_cache_retention": prompt_cache_retention,
+            "image_input_count": image_input_count,
+            **request_metadata,
+        }
+        self.last_completion_metadata = metadata
+
+        try:
+            response = urllib.request.urlopen(http_request, timeout=self.timeout)
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            error = ProviderError(
+                f"openai provider request failed with HTTP {exc.code}",
+                provider="openai",
+                model=self.model,
+                base_url=self.base_url,
+                code=_http_error_code(exc.code),
+                http_status=exc.code,
+                retryable=exc.code in RETRYABLE_HTTP_STATUS or exc.code >= 500,
+                attempts=1,
+                retry_count=0,
+                body_excerpt=body,
+                cause_type=type(exc).__name__,
+            )
+            self.last_completion_metadata = error.to_metadata()
+            raise error from exc
+        except (
+            urllib.error.URLError,
+            RemoteDisconnected,
+            TimeoutError,
+            socket.timeout,
+        ) as exc:
+            error = ProviderError(
+                "openai provider request failed before a valid response",
+                provider="openai",
+                model=self.model,
+                base_url=self.base_url,
+                code=_transport_error_code(exc),
+                retryable=True,
+                attempts=1,
+                retry_count=0,
+                cause_type=type(exc).__name__,
+            )
+            self.last_completion_metadata = error.to_metadata()
+            raise error from exc
+
+        def build_result(data, result_metadata):
+            return _openai_result(
+                data,
+                result_metadata,
+                "openai",
+                self.model,
+                self.base_url,
+            )
+
+        def usage_metadata(usage):
+            return _extract_usage_cache_details({"usage": usage or {}})
+
+        def stream_error(message, *, cause=None):
+            error = _provider_failure(
+                "openai",
+                self.model,
+                self.base_url,
+                "provider_error",
+                message,
+                metadata,
+                cause=cause,
+            )
+            self.last_completion_metadata = error.to_metadata()
+            return error
+
+        managed_response = callable(getattr(response, "__enter__", None))
+        response_context = response if managed_response else nullcontext(response)
+        try:
+            with response_context as body:
+                content_type = (getattr(body, "headers", {}) or {}).get(
+                    "Content-Type", ""
+                )
+                if content_type and not content_type.startswith(
+                    "text/event-stream"
+                ):
+                    yield from self._json_stream_fallback(
+                        body,
+                        metadata,
+                        build_result,
+                        stream_error,
+                    )
+                    return
+                yield from decode_openai_stream(
+                    body,
+                    metadata=metadata,
+                    build_result=build_result,
+                    stop_reason_from_response=_openai_stop_reason,
+                    usage_metadata=usage_metadata,
+                    provider_error=stream_error,
+                    cancellation_token=cancellation_token,
+                )
+        except CancellationRequested:
+            raise
+        except ProviderError as exc:
+            self.last_completion_metadata = exc.to_metadata()
+            raise
+        except Exception as exc:
+            raise stream_error(
+                "OpenAI-compatible stream failed", cause=exc
+            ) from exc
+        finally:
+            close = getattr(response, "close", None)
+            if callable(close):
+                close()
+
+    def _json_stream_fallback(
+        self,
+        response,
+        metadata,
+        build_result,
+        stream_error,
+    ):
+        try:
+            data = json.loads(response.read().decode("utf-8"))
+        except json.JSONDecodeError as exc:
+            raise stream_error(
+                "OpenAI-compatible stream returned invalid JSON", cause=exc
+            ) from exc
+        if data.get("error"):
+            raise stream_error(f"OpenAI-compatible error: {data['error']}")
+        usage = _extract_usage_cache_details(data)
+        metadata.update(usage)
+        result = build_result(data, metadata)
+        if not result.text and not result.tool_calls:
+            raise stream_error(
+                "OpenAI-compatible error: could not extract text from response"
+            )
+        yield ModelStreamEvent(kind="message_start", metadata=dict(metadata))
+        if data.get("usage"):
+            yield ModelStreamEvent(kind="usage", metadata=usage)
+        yield ModelStreamEvent(
+            kind="done",
+            stop_reason=result.stop_reason,
+            continuation=tuple(result.continuation or ()),
+            metadata=dict(metadata),
+            result=result,
+        )
 
 
 class AnthropicCompatibleModelClient:
