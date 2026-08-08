@@ -5,7 +5,6 @@ import json
 import socket
 import time
 from contextlib import nullcontext
-from http.client import RemoteDisconnected
 import urllib.error
 import urllib.request
 
@@ -15,10 +14,19 @@ from .base import ModelResult, ToolCall, ensure_conversation, normalize_stop_rea
 from .errors import ProviderError, sanitize_url
 from .anthropic_streaming import decode_anthropic_stream
 from .openai_streaming import decode_openai_stream
+from .retry import (
+    DEFAULT_RETRY_POLICY,
+    RETRYABLE_HTTP_STATUS,
+    RetryExhausted,
+    RetryPolicy,
+    calculate_retry_delay,
+    classify_retry,
+    retry_after_seconds,
+    run_with_retries,
+)
 from .streaming import ModelStreamEvent
 
 OPENAI_COMPATIBLE_USER_AGENT = "lite/0.1"
-RETRYABLE_HTTP_STATUS = {408, 409, 425, 429, 500, 502, 503, 504}
 
 
 def _normalize_versioned_base_url(base_url):
@@ -397,64 +405,70 @@ def _extract_usage_cache_details(data):
     }
 
 
-def _request_with_retries(provider, model, base_url, request, timeout, retry_budget=2):
-    retry_count = 0
-    attempts = int(retry_budget) + 1
-    for attempt in range(attempts):
-        try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
-                body_text = response.read().decode("utf-8")
-                headers = getattr(response, "headers", {}) or {}
-                content_type = headers.get("Content-Type", "")
-            return body_text, content_type, _provider_metadata(provider, model, base_url, attempt + 1, retry_count)
-        except urllib.error.HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")
-            retryable = exc.code in RETRYABLE_HTTP_STATUS or exc.code >= 500
-            if retryable and attempt < attempts - 1:
-                retry_count += 1
-                time.sleep(_retry_delay(attempt, exc.headers))
-                continue
-            raise ProviderError(
-                f"{provider} provider request failed with HTTP {exc.code}",
-                provider=provider,
-                model=model,
-                base_url=base_url,
-                code=_http_error_code(exc.code),
-                http_status=exc.code,
-                retryable=retryable,
-                attempts=attempt + 1,
-                retry_count=retry_count,
-                body_excerpt=body,
-                cause_type=type(exc).__name__,
-            ) from exc
-        except (urllib.error.URLError, RemoteDisconnected, TimeoutError, socket.timeout) as exc:
-            retryable = True
-            if attempt < attempts - 1:
-                retry_count += 1
-                time.sleep(_retry_delay(attempt, None))
-                continue
-            raise ProviderError(
-                f"{provider} provider request failed before a valid response",
-                provider=provider,
-                model=model,
-                base_url=base_url,
-                code=_transport_error_code(exc),
-                retryable=retryable,
-                attempts=attempt + 1,
-                retry_count=retry_count,
-                cause_type=type(exc).__name__,
-            ) from exc
-    raise AssertionError("unreachable provider retry loop")
+def _request_with_retries(
+    provider,
+    model,
+    base_url,
+    request,
+    timeout,
+    retry_budget=2,
+    *,
+    cancellation_token=None,
+):
+    policy = RetryPolicy(max_retries=int(retry_budget))
+
+    def request_body(_attempt):
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            body_text = response.read().decode("utf-8")
+            headers = getattr(response, "headers", {}) or {}
+            content_type = headers.get("Content-Type", "")
+        payload = _decode_provider_error_payload(body_text)
+        if payload is not None:
+            raise payload
+        return body_text, content_type
+
+    try:
+        result = run_with_retries(
+            request_body,
+            policy=policy,
+            cancellation_token=cancellation_token,
+            sleep_fn=time.sleep,
+        )
+    except RetryExhausted as failure:
+        raise _request_provider_error(
+            provider,
+            model,
+            base_url,
+            failure,
+        ) from failure.cause
+    body_text, content_type = result.value
+    return (
+        body_text,
+        content_type,
+        _provider_metadata(
+            provider,
+            model,
+            base_url,
+            result.attempts,
+            result.retry_count,
+            result.history,
+        ),
+    )
 
 
-def _provider_metadata(provider, model, base_url, attempts, retry_count):
-    return {
+def _provider_metadata(
+    provider, model, base_url, attempts, retry_count, retry_history=()
+):
+    metadata = {
         "provider_protocol": provider,
         "provider_model": model,
         "provider_base_url": sanitize_url(base_url),
         "provider_attempts": int(attempts),
         "provider_retry_count": int(retry_count),
     }
+    if retry_history:
+        metadata["provider_retry_history"] = [dict(item) for item in retry_history]
+    return metadata
 
 
 def _http_error_code(status):
@@ -479,25 +493,143 @@ def _transport_error_code(exc):
 
 
 def _retry_delay(attempt, headers):
-    retry_after = _retry_after_seconds(headers)
-    if retry_after is not None:
-        return min(retry_after, 2.0)
-    return 0.5 * (attempt + 1)
+    return calculate_retry_delay(attempt, headers)
 
 
 def _retry_after_seconds(headers):
-    if not headers:
-        return None
+    return retry_after_seconds(headers)
+
+
+def _request_provider_error(provider, model, base_url, failure):
+    cause = failure.cause
+    if isinstance(cause, ProviderError):
+        return ProviderError(
+            str(cause),
+            provider=cause.provider or provider,
+            model=cause.model or model,
+            base_url=cause.base_url or base_url,
+            code=cause.code,
+            http_status=cause.http_status,
+            retryable=cause.retryable,
+            attempts=failure.attempts,
+            retry_count=failure.retry_count,
+            retry_history=failure.history,
+            body_excerpt=cause.body_excerpt,
+            cause_type=cause.cause_type,
+        )
+    if isinstance(cause, urllib.error.HTTPError):
+        try:
+            body = cause.read().decode("utf-8", errors="replace")
+        except Exception:
+            body = ""
+        status = cause.code
+        return ProviderError(
+            f"{provider} provider request failed with HTTP {status}",
+            provider=provider,
+            model=model,
+            base_url=base_url,
+            code=_http_error_code(status),
+            http_status=status,
+            retryable=status in RETRYABLE_HTTP_STATUS,
+            attempts=failure.attempts,
+            retry_count=failure.retry_count,
+            retry_history=failure.history,
+            body_excerpt=body,
+            cause_type=type(cause).__name__,
+        )
+    return ProviderError(
+        f"{provider} provider request failed before a valid response",
+        provider=provider,
+        model=model,
+        base_url=base_url,
+        code=_transport_error_code(cause),
+        retryable=True,
+        attempts=failure.attempts,
+        retry_count=failure.retry_count,
+        retry_history=failure.history,
+        cause_type=type(cause).__name__,
+    )
+
+
+def _decode_provider_error_payload(body_text):
     try:
-        value = headers.get("Retry-After")
-    except AttributeError:
+        payload = json.loads(body_text)
+    except (TypeError, json.JSONDecodeError):
         return None
-    if not value:
+    if not isinstance(payload, dict) or not payload.get("error"):
         return None
+    value = payload["error"]
+    details = value if isinstance(value, dict) else {"message": str(value)}
+    raw_code = details.get("code") or details.get("type") or "provider_error"
+    code = _normalize_provider_error_code(raw_code)
+    status = details.get("status", details.get("http_status"))
     try:
-        return max(float(value), 0.0)
-    except ValueError:
-        return None
+        status = int(status) if status is not None else None
+    except (TypeError, ValueError):
+        status = None
+    message = details.get("message") or value
+    return ProviderError(
+        f"Provider returned an error: {message}",
+        code=code,
+        http_status=status,
+        retryable=classify_retry({"code": code, "status": status}) is not None,
+        body_excerpt=body_text,
+    )
+
+
+def _normalize_provider_error_code(value):
+    code = str(value or "provider_error").strip().lower().replace("-", "_")
+    if "rate" in code or "throttl" in code:
+        return "rate_limited"
+    if "overload" in code or "unavailable" in code:
+        return "overloaded"
+    if "timeout" in code:
+        return "timeout"
+    if "auth" in code or "permission" in code or "forbidden" in code:
+        return "auth_error"
+    if "context" in code or "length" in code or "token" in code:
+        return "context_overflow"
+    if "invalid" in code or "validation" in code or "schema" in code:
+        return "invalid_request"
+    if "server" in code or "internal" in code:
+        return "server_error"
+    return code
+
+
+def _open_stream_with_retries(
+    provider,
+    model,
+    base_url,
+    request,
+    timeout,
+    *,
+    cancellation_token=None,
+):
+    def open_response(_attempt):
+        return urllib.request.urlopen(request, timeout=timeout)
+
+    try:
+        result = run_with_retries(
+            open_response,
+            policy=DEFAULT_RETRY_POLICY,
+            cancellation_token=cancellation_token,
+            sleep_fn=time.sleep,
+        )
+    except RetryExhausted as failure:
+        raise _request_provider_error(
+            provider,
+            model,
+            base_url,
+            failure,
+        ) from failure.cause
+    return result.value, _provider_metadata(
+        provider,
+        model,
+        base_url,
+        result.attempts,
+        result.retry_count,
+        result.history,
+    )
 
 
 def _provider_failure(provider, model, base_url, code, message, request_metadata=None, cause=None):
@@ -511,6 +643,7 @@ def _provider_failure(provider, model, base_url, code, message, request_metadata
         retryable=False,
         attempts=request_metadata.get("provider_attempts", 1),
         retry_count=request_metadata.get("provider_retry_count", 0),
+        retry_history=request_metadata.get("provider_retry_history", ()),
         cause_type=type(cause).__name__ if cause else "",
     )
     return error
@@ -543,7 +676,12 @@ class OpenAICompatibleModelClient:
         return self.complete_result(request, max_new_tokens, **kwargs).text
 
     def complete_result(
-        self, request, max_new_tokens, prompt_cache_key=None, prompt_cache_retention=None
+        self,
+        request,
+        max_new_tokens,
+        prompt_cache_key=None,
+        prompt_cache_retention=None,
+        cancellation_token=None,
     ):
         self.last_completion_metadata = {}
         conversation = ensure_conversation(request)
@@ -588,6 +726,7 @@ class OpenAICompatibleModelClient:
                 self.base_url,
                 request,
                 self.timeout,
+                cancellation_token=cancellation_token,
             )
         except ProviderError as exc:
             self.last_completion_metadata = exc.to_metadata()
@@ -713,43 +852,25 @@ class OpenAICompatibleModelClient:
         self.last_completion_metadata = metadata
 
         try:
-            response = urllib.request.urlopen(http_request, timeout=self.timeout)
-        except urllib.error.HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")
-            error = ProviderError(
-                f"openai provider request failed with HTTP {exc.code}",
-                provider="openai",
-                model=self.model,
-                base_url=self.base_url,
-                code=_http_error_code(exc.code),
-                http_status=exc.code,
-                retryable=exc.code in RETRYABLE_HTTP_STATUS or exc.code >= 500,
-                attempts=1,
-                retry_count=0,
-                body_excerpt=body,
-                cause_type=type(exc).__name__,
+            response, request_metadata = _open_stream_with_retries(
+                "openai",
+                self.model,
+                self.base_url,
+                http_request,
+                self.timeout,
+                cancellation_token=cancellation_token,
             )
+        except ProviderError as error:
             self.last_completion_metadata = error.to_metadata()
-            raise error from exc
-        except (
-            urllib.error.URLError,
-            RemoteDisconnected,
-            TimeoutError,
-            socket.timeout,
-        ) as exc:
-            error = ProviderError(
-                "openai provider request failed before a valid response",
-                provider="openai",
-                model=self.model,
-                base_url=self.base_url,
-                code=_transport_error_code(exc),
-                retryable=True,
-                attempts=1,
-                retry_count=0,
-                cause_type=type(exc).__name__,
-            )
-            self.last_completion_metadata = error.to_metadata()
-            raise error from exc
+            raise
+        metadata = {
+            "prompt_cache_supported": self.supports_prompt_cache,
+            "prompt_cache_key": prompt_cache_key,
+            "prompt_cache_retention": prompt_cache_retention,
+            "image_input_count": image_input_count,
+            **request_metadata,
+        }
+        self.last_completion_metadata = metadata
 
         def build_result(data, result_metadata):
             return _openai_result(
@@ -875,7 +996,12 @@ class AnthropicCompatibleModelClient:
         return self.complete_result(request, max_new_tokens, **kwargs).text
 
     def complete_result(
-        self, request, max_new_tokens, prompt_cache_key=None, prompt_cache_retention=None
+        self,
+        request,
+        max_new_tokens,
+        prompt_cache_key=None,
+        prompt_cache_retention=None,
+        cancellation_token=None,
     ):
         # 为了保持统一接口，runtime 仍然会传缓存参数进来；
         # 这里只是显式丢弃，因为当前 Anthropic-compatible 路径没有接缓存复用。
@@ -916,6 +1042,7 @@ class AnthropicCompatibleModelClient:
                 self.base_url,
                 request,
                 self.timeout,
+                cancellation_token=cancellation_token,
             )
         except ProviderError as exc:
             self.last_completion_metadata = exc.to_metadata()
@@ -1021,43 +1148,19 @@ class AnthropicCompatibleModelClient:
         self.last_completion_metadata = metadata
 
         try:
-            response = urllib.request.urlopen(http_request, timeout=self.timeout)
-        except urllib.error.HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")
-            error = ProviderError(
-                f"anthropic provider request failed with HTTP {exc.code}",
-                provider="anthropic",
-                model=self.model,
-                base_url=self.base_url,
-                code=_http_error_code(exc.code),
-                http_status=exc.code,
-                retryable=exc.code in RETRYABLE_HTTP_STATUS or exc.code >= 500,
-                attempts=1,
-                retry_count=0,
-                body_excerpt=body,
-                cause_type=type(exc).__name__,
+            response, request_metadata = _open_stream_with_retries(
+                "anthropic",
+                self.model,
+                self.base_url,
+                http_request,
+                self.timeout,
+                cancellation_token=cancellation_token,
             )
+        except ProviderError as error:
             self.last_completion_metadata = error.to_metadata()
-            raise error from exc
-        except (
-            urllib.error.URLError,
-            RemoteDisconnected,
-            TimeoutError,
-            socket.timeout,
-        ) as exc:
-            error = ProviderError(
-                "anthropic provider request failed before a valid response",
-                provider="anthropic",
-                model=self.model,
-                base_url=self.base_url,
-                code=_transport_error_code(exc),
-                retryable=True,
-                attempts=1,
-                retry_count=0,
-                cause_type=type(exc).__name__,
-            )
-            self.last_completion_metadata = error.to_metadata()
-            raise error from exc
+            raise
+        metadata = {"image_input_count": image_input_count, **request_metadata}
+        self.last_completion_metadata = metadata
 
         def stream_error(message, *, cause=None):
             error = _provider_failure(

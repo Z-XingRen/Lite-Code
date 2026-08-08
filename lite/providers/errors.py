@@ -16,6 +16,7 @@ class ProviderError(RuntimeError):
         retryable=False,
         attempts=1,
         retry_count=0,
+        retry_history=(),
         body_excerpt="",
         cause_type="",
     ):
@@ -28,6 +29,16 @@ class ProviderError(RuntimeError):
         self.retryable = bool(retryable)
         self.attempts = int(attempts or 1)
         self.retry_count = int(retry_count or 0)
+        self.retry_history = tuple(
+            {
+                "attempt": int(item.get("attempt", 0)),
+                "retry_count": int(item.get("retry_count", 0)),
+                "reason": str(item.get("reason", "")),
+                "delay_seconds": float(item.get("delay_seconds", 0)),
+            }
+            for item in (retry_history or ())
+            if isinstance(item, dict)
+        )
         self.body_excerpt = _clip(body_excerpt, 500)
         self.cause_type = str(cause_type or "")
 
@@ -49,6 +60,8 @@ class ProviderError(RuntimeError):
             error["base_url"] = self.base_url
         if self.http_status is not None:
             error["http_status"] = int(self.http_status)
+        if self.retry_history:
+            error["retry_history"] = [dict(item) for item in self.retry_history]
         if self.body_excerpt:
             error["body_excerpt"] = self.body_excerpt
         if self.cause_type:
