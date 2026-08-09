@@ -6,7 +6,6 @@
 
 import json
 import shutil
-import subprocess
 import textwrap
 from functools import partial
 
@@ -243,11 +242,10 @@ def tool_search(agent, args):
 
     if shutil.which("rg"):
         # 优先用 rg，因为搜索会非常频繁，搜索延迟会直接影响 agent 控制循环。
-        result = subprocess.run(
+        result = run_cancellable_process(
             ["rg", "-n", "--smart-case", "--max-count", "200", pattern, str(path)],
-            cwd=agent.root,
-            capture_output=True,
-            text=True,
+            cwd=agent.root, env=agent.shell_env(), timeout=120,
+            cancellation_token=agent.current_cancellation_token,
         )
         return result.stdout.strip() or result.stderr.strip() or "(no matches)"
 
@@ -270,6 +268,8 @@ def tool_search(agent, args):
             file_path.read_text(encoding="utf-8", errors="replace").splitlines(),
             start=1,
         ):
+            if (number - 1) % 200 == 0:
+                agent.current_cancellation_token.raise_if_cancelled()
             if pattern.lower() in line.lower():
                 matches.append(f"{file_path.relative_to(agent.root).as_posix()}:{number}:{line}")
                 if len(matches) >= 200:

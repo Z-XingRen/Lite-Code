@@ -13,15 +13,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from lite import Lite, SessionStore, WorkspaceContext
-from lite.core.engine_helpers import execute_native_tool_calls
 from lite.core.run_store import RunStore
 from lite.core.runtime_checkpoints import RuntimeCheckpointsMixin
 from lite.core.session_journal import SessionJournalWriter
 from lite.core.task_state import TaskState
+from lite.core.tool_batch_scheduler import execute_parallel_tool_batch
+from lite.core.tool_profiles import build_tool_profiles
 from lite.core.tool_result_artifacts import prepare_tool_result_observation
 from lite.core.workspace_change_tracker import WorkspaceChangeTracker
-from lite.providers.base import ModelConversation, ModelResult, ToolCall
+from lite.providers.base import ToolCall
 from lite.testing import ScriptedModelClient
+from lite.tools.base import RegisteredTool
 
 
 def percentile(values: list[float], percent: float) -> float:
@@ -404,129 +406,151 @@ def benchmark_tool_output_context(runs: int) -> dict:
         }
 
 
-class _NoopEventBus:
-    @staticmethod
-    def emit(_event: str, _payload: dict) -> None:
-        return None
+def _build_batch_agent(root: Path, call_count: int, delay_seconds: float) -> Lite:
+    calls = []
+    for index in range(call_count):
+        path = f"input-{index}.txt"
+        (root / path).write_text(f"input {index}\n", encoding="utf-8")
+        calls.append(
+            ToolCall(
+                call_id=f"call-{index}",
+                name="read_file",
+                arguments={"path": path, "start": 1, "end": 1},
+            )
+        )
+    agent = Lite(
+        model_client=ScriptedModelClient([]),
+        workspace=WorkspaceContext.build(root),
+        session_store=SessionStore(root / ".lite" / "sessions"),
+        run_store=RunStore(root / ".lite" / "runs"),
+        approval_policy="auto",
+        auto_dream=False,
+    )
+    agent.session_journal_writer = _BenchmarkJournalWriter()
+    agent.permission_checker = _BenchmarkPermissionChecker()
+    original = agent.tools["read_file"]
+    probe = {
+        "lock": threading.Lock(),
+        "active": 0,
+        "started_at": 0.0,
+        "finished_at": 0.0,
+    }
 
-
-class _NoopRunStore:
-    @staticmethod
-    def write_task_state(_task_state: TaskState) -> None:
-        return None
-
-
-class BatchRuntime:
-    def __init__(self, delay_seconds: float):
-        self.delay_seconds = delay_seconds
-        self.max_steps = 50
-        self.abort_requested = False
-        self.current_run_id = "run_batch"
-        self._last_tool_result_metadata = {}
-        self.session_event_bus = _NoopEventBus()
-        self.run_store = _NoopRunStore()
-        self.history = []
-
-    def run_tool(self, name: str, args: dict) -> str:
-        time.sleep(self.delay_seconds)
-        self._last_tool_result_metadata = {
-            "tool_status": "ok",
-            "tool_error_code": "",
-            "workspace_changed": False,
-            "affected_paths": [],
-        }
-        return f"{name}:{args['index']}"
-
-    def record(self, item: dict) -> None:
-        self.history.append(item)
-
-    @staticmethod
-    def emit_trace(_task_state: TaskState, _event: str, _payload: dict) -> None:
-        return None
-
-    @staticmethod
-    def create_checkpoint(
-        _task_state: TaskState, _user_message: str, trigger: str
-    ) -> dict:
-        return {"checkpoint_id": f"checkpoint-{trigger}"}
-
-
-class BatchEngine:
-    def __init__(self, runtime: BatchRuntime):
-        self.runtime = runtime
-
-    @staticmethod
-    def drain_worker_notifications() -> tuple:
-        return ()
-
-
-def _drain_generator(generator) -> tuple[list[dict], tuple]:
-    events = []
-    while True:
+    def delayed_read(args):
+        index = int(Path(args["path"]).stem.split("-")[-1])
+        with probe["lock"]:
+            if probe["active"] == 0:
+                probe["started_at"] = time.perf_counter()
+            probe["active"] += 1
         try:
-            events.append(next(generator))
-        except StopIteration as exc:
-            return events, exc.value
+            agent.current_cancellation_token.wait(delay_seconds)
+            agent.current_cancellation_token.raise_if_cancelled()
+            return f"read_file:{index}"
+        finally:
+            with probe["lock"]:
+                probe["active"] -= 1
+                if probe["active"] == 0:
+                    probe["finished_at"] = time.perf_counter()
+
+    agent.tools["read_file"] = RegisteredTool(
+        name="read_file",
+        schema=original.schema,
+        description=original.description,
+        risky=False,
+        runner=delayed_read,
+        execution_mode="parallel",
+        effect_class="read_only",
+    )
+    agent.tool_profiles = build_tool_profiles(agent.tools)
+    return agent, tuple(calls), probe
 
 
-def _run_tool_batch(call_count: int, delay_seconds: float) -> tuple[float, list[int]]:
-    runtime = BatchRuntime(delay_seconds)
-    engine = BatchEngine(runtime)
-    task_state = TaskState.create(
-        run_id="run_batch", task_id="task_batch", user_request="benchmark batch"
-    )
-    calls = tuple(
-        ToolCall(call_id=f"call-{index}", name="delayed_read", arguments={"index": index})
-        for index in range(call_count)
-    )
-    result = ModelResult(tool_calls=calls)
-    conversation = ModelConversation(initial_input="benchmark")
+class _BenchmarkJournalEffect:
+    @staticmethod
+    def complete(_outcome, _result=None):
+        return None
+
+    def __enter__(self):
+        return self
+
+    @staticmethod
+    def __exit__(_exc_type, _exc, _traceback):
+        return False
+
+
+class _BenchmarkJournalState:
+    open_operation = None
+
+
+class _BenchmarkJournalWriter:
+    state = _BenchmarkJournalState()
+
+    @staticmethod
+    def effect(*_args, **_kwargs):
+        return _BenchmarkJournalEffect()
+
+    @staticmethod
+    def close():
+        return None
+
+
+class _BenchmarkPermission:
+    allowed = True
+    decision = "allow"
+    reason = "benchmark_read_only"
+    security_event_type = ""
+
+
+class _BenchmarkPermissionChecker:
+    @staticmethod
+    def check(_tool, _args, *, call_id=None):
+        return _BenchmarkPermission()
+
+
+def _close_batch_agent(agent: Lite) -> None:
+    writer = getattr(agent, "session_journal_writer", None)
+    if writer is not None:
+        writer.close()
+
+
+def _run_tool_batch(
+    call_count: int, delay_seconds: float
+) -> tuple[float, float, list[int]]:
+    temp_dir = tempfile.TemporaryDirectory(prefix="lite-tool-batch-")
+    root = Path(temp_dir.name)
+    agent, calls, probe = _build_batch_agent(root, call_count, delay_seconds)
     started = time.perf_counter()
-    events, _ = _drain_generator(
-        execute_native_tool_calls(
-            engine, task_state, "benchmark batch", conversation, result, 0
-        )
-    )
-    duration = time.perf_counter() - started
-    result_order = [
-        int(event["content"].split(":", 1)[1])
-        for event in events
-        if event["type"] == "tool_result"
-    ]
-    return duration, result_order
+    try:
+        outcomes = execute_parallel_tool_batch(agent, calls)
+        duration = time.perf_counter() - started
+    finally:
+        _close_batch_agent(agent)
+        temp_dir.cleanup()
+    result_order = [int(outcome.result.split(":", 1)[1]) for outcome in outcomes]
+    effect_duration = probe["finished_at"] - probe["started_at"]
+    return duration, effect_duration, result_order
 
 
-def _run_abort_batch(delay_seconds: float, abort_after_seconds: float) -> float:
-    runtime = BatchRuntime(delay_seconds)
-    engine = BatchEngine(runtime)
-    task_state = TaskState.create(
-        run_id="run_abort", task_id="task_abort", user_request="benchmark abort"
-    )
-    result = ModelResult(
-        tool_calls=(
-            ToolCall(call_id="call-0", name="delayed_read", arguments={"index": 0}),
-            ToolCall(call_id="call-1", name="delayed_read", arguments={"index": 1}),
-        )
-    )
-    timer = threading.Timer(
-        abort_after_seconds, lambda: setattr(runtime, "abort_requested", True)
-    )
+def _run_abort_batch(
+    delay_seconds: float, abort_after_seconds: float
+) -> tuple[float, bool]:
+    temp_dir = tempfile.TemporaryDirectory(prefix="lite-tool-abort-")
+    root = Path(temp_dir.name)
+    agent, calls, _probe = _build_batch_agent(root, 2, delay_seconds)
+    timer = threading.Timer(abort_after_seconds, agent.abort_current_turn)
     timer.start()
     started = time.perf_counter()
     try:
-        _drain_generator(
-            execute_native_tool_calls(
-                engine,
-                task_state,
-                "benchmark abort",
-                ModelConversation(initial_input="benchmark"),
-                result,
-                0,
-            )
-        )
+        execute_parallel_tool_batch(agent, calls)
+        duration = time.perf_counter() - started
     finally:
         timer.join()
-    return time.perf_counter() - started
+        _close_batch_agent(agent)
+        temp_dir.cleanup()
+    clean = not any(
+        thread.name.startswith("lite-tool-") for thread in threading.enumerate()
+    )
+    return duration, clean
 
 
 def benchmark_tool_batch(runs: int, delay_ms: int) -> dict:
@@ -534,15 +558,25 @@ def benchmark_tool_batch(runs: int, delay_ms: int) -> dict:
     scenarios = {}
     for call_count in (2, 4, 8):
         _run_tool_batch(call_count, delay_seconds)
-        durations = []
+        end_to_end_durations = []
+        effect_durations = []
         observed_orders = []
         for _ in range(runs):
-            duration, order = _run_tool_batch(call_count, delay_seconds)
-            durations.append(duration)
+            duration, effect_duration, order = _run_tool_batch(
+                call_count, delay_seconds
+            )
+            end_to_end_durations.append(duration)
+            effect_durations.append(effect_duration)
             observed_orders.append(order)
+        effect_median_ms = statistics.median(effect_durations) * 1000
         scenarios[str(call_count)] = {
-            **timing_summary(durations),
+            "effect_wall": timing_summary(effect_durations),
+            "end_to_end": timing_summary(end_to_end_durations),
+            "expected_parallel_delay_ms": delay_ms,
             "expected_serial_delay_ms": call_count * delay_ms,
+            "effect_median_to_serial_delay_ratio": round(
+                effect_median_ms / (call_count * delay_ms), 4
+            ),
             "result_order_stable": all(
                 order == list(range(call_count)) for order in observed_orders
             ),
@@ -550,18 +584,20 @@ def benchmark_tool_batch(runs: int, delay_ms: int) -> dict:
 
     abort_after_ms = max(1, delay_ms // 4)
     _run_abort_batch(delay_seconds, abort_after_ms / 1000)
-    abort_durations = [
+    abort_samples = [
         _run_abort_batch(delay_seconds, abort_after_ms / 1000) for _ in range(runs)
     ]
     return {
+        "scheduler": "parallel_read_only",
         "warmup_runs": 1,
         "measured_runs": runs,
         "controlled_delay_ms_per_tool": delay_ms,
         "scenarios_by_call_count": scenarios,
-        "abort_during_first_tool": {
-            **timing_summary(abort_durations),
+        "abort_during_batch": {
+            **timing_summary([duration for duration, _ in abort_samples]),
             "abort_requested_after_ms": abort_after_ms,
-            "in_flight_tool_cancellation_supported": False,
+            "in_flight_tool_cancellation_supported": True,
+            "all_workers_joined": all(clean for _, clean in abort_samples),
         },
     }
 

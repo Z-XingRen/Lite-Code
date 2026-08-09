@@ -18,6 +18,10 @@ from .turn_transitions import (
     CONTINUE_EMPTY_RESPONSE_RETRY,
     emit_continue_transition,
 )
+from .tool_batch_scheduler import (
+    execute_parallel_tool_batch,
+    parallel_batch_eligible,
+)
 from .workspace import clip, now
 
 
@@ -32,12 +36,32 @@ def execute_tool_payload(engine, task_state, user_message, payload):
     name = payload.get("name", "")
     args = payload.get("args", {})
     call_id = str(payload.get("call_id", "") or "")
+    tool_started_at, event = start_tool_payload(agent, task_state, name, args, call_id)
+    yield event
+    tool_result = agent.run_tool(name, args, call_id=call_id)
+    tool_metadata = dict(agent._last_tool_result_metadata or {})
+    return (
+        yield from commit_tool_payload(
+            engine,
+            task_state,
+            user_message,
+            name,
+            args,
+            call_id,
+            tool_started_at,
+            tool_result,
+            tool_metadata,
+        )
+    )
+
+
+def start_tool_payload(agent, task_state, name, args, call_id):
     task_state.record_tool(name)
     tool_started_at = time.monotonic()
     agent.session_event_bus.emit(
         "tool_started", {"run_id": task_state.run_id, "tool_name": name, "args": args}
     )
-    yield {
+    return tool_started_at, {
         "type": "tool_call",
         "run_id": task_state.run_id,
         "call_id": call_id,
@@ -45,8 +69,19 @@ def execute_tool_payload(engine, task_state, user_message, payload):
         "args": args,
     }
 
-    tool_result = agent.run_tool(name, args, call_id=call_id)
-    tool_metadata = dict(agent._last_tool_result_metadata or {})
+
+def commit_tool_payload(
+    engine,
+    task_state,
+    user_message,
+    name,
+    args,
+    call_id,
+    tool_started_at,
+    tool_result,
+    tool_metadata,
+):
+    agent = engine.runtime
     tool_duration_ms = int((time.monotonic() - tool_started_at) * 1000)
     agent.session_event_bus.emit(
         "tool_finished",
@@ -148,6 +183,20 @@ def execute_native_tool_calls(
             engine, task_state, conversation, result
         )
         return tool_steps, 0, rejected
+    if len(calls) <= agent.max_steps - tool_steps and parallel_batch_eligible(
+        agent, calls
+    ):
+        return (
+            yield from execute_parallel_native_tool_calls(
+                engine,
+                task_state,
+                user_message,
+                conversation,
+                result,
+                calls,
+                tool_steps,
+            )
+        )
     outputs = []
     feedback = []
     executed = 0
@@ -180,6 +229,51 @@ def execute_native_tool_calls(
     if not agent.abort_requested:
         conversation.append_result(result, tool_outputs=outputs, feedback=feedback)
     return tool_steps, executed, len(calls)
+
+
+def execute_parallel_native_tool_calls(
+    engine,
+    task_state,
+    user_message,
+    conversation,
+    result,
+    calls,
+    tool_steps,
+):
+    agent = engine.runtime
+    started = []
+    for call in calls:
+        tool_started_at, event = start_tool_payload(
+            agent,
+            task_state,
+            call.name,
+            call.arguments,
+            call.call_id,
+        )
+        started.append(tool_started_at)
+        yield event
+    outcomes = execute_parallel_tool_batch(agent, calls)
+    outputs = []
+    feedback = []
+    for call, tool_started_at, outcome in zip(calls, started, outcomes):
+        agent._last_tool_result_metadata = outcome.metadata
+        output, notifications = yield from commit_tool_payload(
+            engine,
+            task_state,
+            user_message,
+            call.name,
+            call.arguments,
+            call.call_id,
+            tool_started_at,
+            outcome.result,
+            outcome.metadata,
+        )
+        outputs.append(output)
+        feedback.extend(notifications)
+    tool_steps += len(calls)
+    if not agent.abort_requested:
+        conversation.append_result(result, tool_outputs=outputs, feedback=feedback)
+    return tool_steps, len(calls), len(calls)
 
 
 def reject_truncated_tool_calls(engine, task_state, conversation, result):
