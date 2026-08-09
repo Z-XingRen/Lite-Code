@@ -111,6 +111,7 @@ class Lite(RuntimeSecretsMixin, RuntimeCheckpointsMixin):
         allowed_tools=None,
         final_readiness_mode="warn",
         before_final_hooks=None,
+        context_transform=None,
         session_journal_writer=None,
     ):
         self.model_client = model_client
@@ -158,6 +159,7 @@ class Lite(RuntimeSecretsMixin, RuntimeCheckpointsMixin):
         self.allowed_tools = self._normalize_allowed_tools(allowed_tools)
         self.final_readiness_mode = str(final_readiness_mode or "warn")
         self.before_final_hooks = tuple(before_final_hooks or ())
+        self.context_transform = context_transform
         self.run_store = run_store or RunStore(
             Path(workspace.repo_root) / ".lite" / "runs"
         )

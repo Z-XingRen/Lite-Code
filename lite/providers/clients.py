@@ -249,6 +249,8 @@ def _anthropic_input_content(prompt):
 
 
 def _openai_conversation_input(conversation):
+    if conversation.request_messages:
+        return _openai_request_messages(conversation.request_messages)
     content, image_input_count = _openai_input_content(conversation.initial_input)
     items = [{"role": "user", "content": content}]
     for turn in conversation.turns:
@@ -273,7 +275,53 @@ def _openai_conversation_input(conversation):
     return items, image_input_count
 
 
+def _openai_request_messages(messages):
+    items = []
+    image_input_count = 0
+    for message in messages:
+        role = message["role"]
+        if role == "user":
+            content, image_count = _openai_input_content(message.get("content", ""))
+            items.append({"role": "user", "content": content})
+            image_input_count += image_count
+        elif role == "tool":
+            items.append(
+                {
+                    "type": "function_call_output",
+                    "call_id": message["call_id"],
+                    "output": str(message.get("content", "")),
+                }
+            )
+        else:
+            continuation = copy.deepcopy(list(message.get("continuation", ())))
+            if continuation and not any(
+                item.get("type") == "tool_use" for item in continuation
+            ):
+                items.extend(continuation)
+                continue
+            text = str(message.get("content", "") or "")
+            if text:
+                items.append(
+                    {
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": text}],
+                    }
+                )
+            items.extend(
+                {
+                    "type": "function_call",
+                    "call_id": call["call_id"],
+                    "name": call["name"],
+                    "arguments": json.dumps(call.get("arguments", {})),
+                }
+                for call in message.get("tool_calls", ())
+            )
+    return items, image_input_count
+
+
 def _anthropic_conversation_messages(conversation):
+    if conversation.request_messages:
+        return _anthropic_request_messages(conversation.request_messages)
     content, image_input_count = _anthropic_input_content(conversation.initial_input)
     messages = [{"role": "user", "content": content}]
     for turn in conversation.turns:
@@ -294,6 +342,58 @@ def _anthropic_conversation_messages(conversation):
             user_content.append({"type": "text", "text": "\n\n".join(turn.feedback)})
         if user_content:
             messages.append({"role": "user", "content": user_content})
+    return messages, image_input_count
+
+
+def _anthropic_request_messages(request_messages):
+    messages = []
+    image_input_count = 0
+
+    def append_user(content):
+        if messages and messages[-1]["role"] == "user":
+            messages[-1]["content"].extend(content)
+        else:
+            messages.append({"role": "user", "content": list(content)})
+
+    for message in request_messages:
+        role = message["role"]
+        if role == "user":
+            content, image_count = _anthropic_input_content(message.get("content", ""))
+            append_user(content)
+            image_input_count += image_count
+        elif role == "tool":
+            append_user(
+                [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": message["call_id"],
+                        "content": str(message.get("content", "")),
+                        **({"is_error": True} if message.get("is_error") else {}),
+                    }
+                ]
+            )
+        else:
+            continuation = copy.deepcopy(list(message.get("continuation", ())))
+            if continuation and not any(
+                item.get("type") in {"function_call", "message"}
+                for item in continuation
+            ):
+                content = continuation
+            else:
+                content = []
+                text = str(message.get("content", "") or "")
+                if text:
+                    content.append({"type": "text", "text": text})
+                content.extend(
+                    {
+                        "type": "tool_use",
+                        "id": call["call_id"],
+                        "name": call["name"],
+                        "input": copy.deepcopy(call.get("arguments", {})),
+                    }
+                    for call in message.get("tool_calls", ())
+                )
+            messages.append({"role": "assistant", "content": content})
     return messages, image_input_count
 
 

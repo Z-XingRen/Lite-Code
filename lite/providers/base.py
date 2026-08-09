@@ -57,6 +57,8 @@ class ConversationTurn:
     """One provider response plus the local observations that follow it."""
 
     continuation: tuple[dict, ...]
+    tool_calls: tuple[ToolCall, ...] = ()
+    text: str = ""
     tool_outputs: tuple[ToolOutput, ...] = ()
     feedback: tuple[str, ...] = ()
 
@@ -68,11 +70,15 @@ class ModelConversation:
     initial_input: Any
     tools: tuple[ToolDefinition, ...] = ()
     turns: list[ConversationTurn] = field(default_factory=list)
+    request_messages: tuple[dict, ...] = ()
+    context_metadata: dict = field(default_factory=dict)
 
     def append_result(self, result, *, tool_outputs=(), feedback=()):
         self.turns.append(
             ConversationTurn(
                 continuation=tuple(result.continuation or ()),
+                tool_calls=tuple(result.tool_calls or ()),
+                text=str(result.text or ""),
                 tool_outputs=tuple(tool_outputs or ()),
                 feedback=tuple(str(item) for item in (feedback or ()) if str(item).strip()),
             )

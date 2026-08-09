@@ -1,13 +1,8 @@
-"""Turn-level runtime engine.
-
-The runtime owns state and persistence. Engine owns the control loop that turns
-one user request into model calls, tool executions, and user-visible events.
-"""
+"""Turn-level control loop for model calls, tools, and user-visible events."""
 
 import time
 
 from ..features import memory as memorylib
-from ..providers.base import ModelConversation
 from .completion_governance import (
     final_readiness_action,
     finish_limited_run,
@@ -17,6 +12,7 @@ from .completion_governance import (
 from .context_replacements import commit_proposed_replacements
 from .model_errors import finish_model_error
 from .model_streaming import consume_model_stream
+from .request_context import finish_request_context_error, rebuild_model_request
 from .engine_helpers import (
     emit_empty_result_retry,
     execute_native_tool_calls,
@@ -145,15 +141,17 @@ class Engine:
             agent.run_store.write_task_state(task_state)
             prompt_started_at = time.monotonic()
             prompt, prompt_metadata = agent._build_prompt_and_metadata(user_message)
-            if conversation is None:
-                conversation = ModelConversation(
-                    initial_input=prompt,
-                    tools=agent.model_tools(),
+            try:
+                conversation, request_context = rebuild_model_request(
+                    agent, prompt, conversation
                 )
-            else:
-                # Tool profiles can change in-band (for example entering plan
-                # mode), so advertise the current native tool set each call.
-                conversation.tools = agent.model_tools()
+            except Exception as exc:
+                yield from finish_request_context_error(
+                    self, task_state, user_message, prompt_metadata, exc,
+                    prompt_started_at, run_started_at,
+                )
+                return
+            prompt_metadata["request_context"] = request_context
             if commit_proposed_replacements(agent.session, prompt_metadata):
                 agent.persist_session(replace_history=True)
             agent.emit_trace(
