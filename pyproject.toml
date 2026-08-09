@@ -41,3 +41,6 @@ norecursedirs = [
   "examples",
   "fixtures",
 ]
+
+[tool.ruff]
+extend-exclude = ["benchmarks/formal_v1/fixtures"]

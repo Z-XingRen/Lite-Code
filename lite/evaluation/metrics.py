@@ -1720,7 +1720,8 @@ def _run_memory_continuity_variant(variant):
             )
             session_one.memory.promote_durable([("project-conventions", "Continuity fact alpha applies.")])
             session_one.session["memory"] = session_one.memory.to_dict()
-            store.save(session_one.session)
+            session_one.persist_session()
+            session_one.close()
             agent = Lite.from_session(
                 _MemoryContinuityModelClient(),
                 workspace,
@@ -1752,7 +1753,7 @@ def _run_memory_continuity_variant(variant):
         todos = agent.session.get("todos", {}).get("items", [])
         todo_continued = any(item.get("content") == "Ship continuity todo" and item.get("status") != "done" for item in todos)
         first_action_correct = "continuity fact alpha" in final_answer.lower()
-        return {
+        result = {
             "task_id": "memory_continuity_fact_todo",
             "category": "memory_continuity",
             "variant": variant,
@@ -1767,6 +1768,8 @@ def _run_memory_continuity_variant(variant):
             "first_action_correct": first_action_correct,
             "todo_continued": todo_continued,
         }
+        agent.close()
+        return result
 
 
 def _run_recovery_task_variant(task, variant):

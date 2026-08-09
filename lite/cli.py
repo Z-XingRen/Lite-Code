@@ -900,6 +900,13 @@ def main(argv=None):
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 2
+    try:
+        return _run_agent(agent, args)
+    finally:
+        agent.close()
+
+
+def _run_agent(agent, args):
 
     mode = interaction_mode(args)
     if mode == "tui":

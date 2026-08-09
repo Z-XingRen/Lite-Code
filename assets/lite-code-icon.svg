@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">LITE Code icon</title>
+  <desc id="desc">A geometric two-by-two LI TE lettermark on a dark rounded square.</desc>
+  <rect width="512" height="512" rx="96" fill="#0f1117"/>
+  <g fill="none" stroke="#e4e7ec" stroke-width="34" stroke-linecap="square" stroke-linejoin="miter">
+    <path d="M92 78v132h104"/>
+    <path d="M286 78h116M344 78v132M286 210h116" stroke="#8bd5ff"/>
+    <path d="M82 302h132M148 302v132"/>
+    <path d="M286 302v132M286 302h124M286 368h102M286 434h124"/>
+  </g>
+</svg>

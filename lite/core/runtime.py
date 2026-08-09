@@ -38,7 +38,7 @@ from .runtime_journal import (
 )
 from .runtime_secrets import REDACTED_VALUE, RuntimeSecretsMixin
 from .session_events import SessionEventBus
-from .session_lifecycle import clear_runtime_session, resume_runtime_session
+from .session_lifecycle import clear_runtime_session, close_runtime_session, resume_runtime_session
 from .session_store import SessionStore as SessionStore  # noqa: F401
 from .tool_repetition import is_repeated_tool_call
 from .tool_profiles import build_tool_profiles
@@ -846,6 +846,9 @@ class Lite(RuntimeSecretsMixin, RuntimeCheckpointsMixin):
 
     def clear_session(self):
         return clear_runtime_session(self)
+
+    def close(self):
+        close_runtime_session(self)
 
     def run_tool(self, name, args, *, call_id=""):
         return tool_executor.run_tool(self, name, args, call_id=call_id)

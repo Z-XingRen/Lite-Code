@@ -11,17 +11,23 @@ from pathlib import Path
 
 def find_bash():
     discovered = shutil.which("bash")
-    if discovered:
-        return discovered
-    if os.name != "nt":
-        return None
-    for candidate in (
+    windows_candidates = (
         Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Git" / "bin" / "bash.exe",
         Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Git" / "usr" / "bin" / "bash.exe",
-    ):
-        if candidate.is_file():
-            return str(candidate)
-    return None
+    )
+    return _select_bash_path(
+        platform_name=os.name,
+        discovered=discovered,
+        windows_candidates=windows_candidates,
+    )
+
+
+def _select_bash_path(*, platform_name, discovered, windows_candidates):
+    if platform_name == "nt":
+        for candidate in windows_candidates:
+            if candidate.is_file():
+                return str(candidate)
+    return discovered
 
 
 def run_verifier(command, *, cwd, timeout=None):

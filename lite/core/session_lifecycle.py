@@ -32,6 +32,10 @@ def clear_runtime_session(runtime):
     return runtime.session["id"]
 
 
+def close_runtime_session(runtime):
+    _shutdown_workers(runtime)
+
+
 def _rebind(runtime, emit_started):
     runtime._ensure_session_shape()
     runtime.session_event_bus = SessionEventBus(
