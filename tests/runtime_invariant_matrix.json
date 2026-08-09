@@ -1,0 +1,50 @@
+{
+  "background_process": [
+    "tests/test_effect_cancellation.py::test_shell_timeout_terminates_descendants_before_they_can_write",
+    "tests/test_agent_workers_acceptance.py::test_clear_session_stops_running_background_workers"
+  ],
+  "cancel": [
+    "tests/test_provider_http_cancellation.py::test_runtime_abort_interrupts_active_provider_http_read",
+    "tests/test_tool_batch_scheduler.py::test_parallel_batch_cancellation_joins_every_tool_thread"
+  ],
+  "crash_prefix": [
+    "tests/test_session_journal_recovery.py::test_each_effect_crash_prefix_recovers_deterministically",
+    "tests/test_session_journal_recovery.py::test_snapshot_crash_after_atomic_replace_recovers_from_its_open_intent"
+  ],
+  "file_write_effect": [
+    "tests/test_session_journal_writer.py::test_effect_intent_is_durable_before_side_effect_and_result_follows",
+    "tests/test_session_journal_writer.py::test_failed_append_does_not_advance_in_memory_state"
+  ],
+  "history_hardening": [
+    "tests/test_request_context.py::test_hardening_inserts_reasoned_result_for_missing_tool_output",
+    "tests/test_request_context.py::test_hardening_rejects_unrecoverable_tool_histories"
+  ],
+  "network_effect": [
+    "tests/test_provider_http_cancellation.py::test_stream_token_cancel_closes_blocking_response_without_retry",
+    "tests/test_provider_http_cancellation.py::test_cancel_race_after_response_open_closes_before_reading"
+  ],
+  "permission": [
+    "tests/test_permissions_acceptance.py::test_permission_checker_is_the_single_default_tool_gate",
+    "tests/test_permissions_acceptance.py::test_plan_mode_switches_tool_profile_and_allows_only_active_plan_file"
+  ],
+  "process_effect": [
+    "tests/test_effect_cancellation.py::test_runtime_abort_terminates_shell_tree_and_history_can_resume",
+    "tests/test_effect_cancellation.py::test_shell_timeout_terminates_descendants_before_they_can_write"
+  ],
+  "reducer_replay": [
+    "tests/test_session_journal.py::test_v1_fixture_replays_to_deterministic_canonical_state",
+    "tests/test_session_journal.py::test_reducer_rejects_two_open_operations_and_mutation_during_effect"
+  ],
+  "resume": [
+    "tests/test_effect_cancellation.py::test_runtime_abort_terminates_shell_tree_and_history_can_resume",
+    "tests/test_session_compatibility.py::test_cutover_session_resume_opens_writer_and_never_uses_legacy_save"
+  ],
+  "sandbox": [
+    "tests/test_permissions_acceptance.py::test_run_shell_required_sandbox_fails_closed_after_permission",
+    "tests/test_permissions_acceptance.py::test_run_shell_best_effort_sandbox_degrades_and_keeps_permission_gate"
+  ],
+  "timer_effect": [
+    "tests/test_provider_retry.py::test_run_with_retries_records_history_and_attempt_budget_without_real_sleep",
+    "tests/test_provider_retry.py::test_backoff_cancellation_is_immediate_and_does_not_start_next_attempt"
+  ]
+}

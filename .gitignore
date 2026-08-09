@@ -21,7 +21,6 @@ dist/
 htmlcov/
 
 # Local experimental tests with known failures
-/tests/test_architecture_boundaries.py
 /tests/test_benchmark_integrations.py
 /tests/test_evaluator.py
 /tests/test_tui.py
