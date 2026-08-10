@@ -22,7 +22,7 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
           enable-cache: true
-      - run: uv sync --group dev
+      - run: uv sync --group dev --locked
       - run: uv run ruff check .
       - run: uv run mypy
       - run: uv run python -m pytest -q
@@ -49,7 +49,7 @@ jobs:
         with:
           python-version: "3.12"
           enable-cache: true
-      - run: uv sync --group dev
+      - run: uv sync --group dev --locked
       - run: uv run python -m pytest -m stress -q
       - name: Archive deterministic runtime evidence
         run: >-
