@@ -22,7 +22,7 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
           enable-cache: true
-      - run: uv sync --group dev
+      - run: uv sync --group dev --locked
       - run: uv run ruff check .
       - run: uv run mypy
       - run: uv run python -m pytest -q
@@ -33,6 +33,7 @@ jobs:
           tests/test_session_journal_recovery.py
           tests/test_session_journal_migration.py
           tests/test_session_journal_writer.py
+          tests/test_session_tree.py
           tests/test_sandbox_config.py
           tests/test_sandbox_runner.py
           tests/test_permissions_acceptance.py
@@ -49,7 +50,7 @@ jobs:
         with:
           python-version: "3.12"
           enable-cache: true
-      - run: uv sync --group dev
+      - run: uv sync --group dev --locked
       - run: uv run python -m pytest -m stress -q
       - name: Archive deterministic runtime evidence
         run: >-

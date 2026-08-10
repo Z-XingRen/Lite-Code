@@ -944,7 +944,19 @@ def _one_shot_prompt(args):
     return " ".join(args.prompt).strip()
 
 
+def _configure_cli_streams():
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(errors="replace")
+        except (OSError, ValueError):
+            continue
+
+
 def main(argv=None):
+    _configure_cli_streams()
     args = build_arg_parser().parse_args(argv)
     validation_error = validate_args(args)
     if validation_error:
