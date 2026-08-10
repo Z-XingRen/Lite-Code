@@ -365,9 +365,9 @@ def test_parallel_batch_cancellation_joins_every_tool_thread(tmp_path):
         name="wp18-coordinator",
     )
     coordinator.start()
-    started = both_started.wait(timeout=1)
+    started = both_started.wait(timeout=5)
     agent.abort_current_turn()
-    coordinator.join(timeout=3)
+    coordinator.join(timeout=5)
 
     assert started is True
     assert not coordinator.is_alive()

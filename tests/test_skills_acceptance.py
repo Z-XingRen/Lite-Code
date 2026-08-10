@@ -307,6 +307,7 @@ def test_prompt_metadata_exposes_skill_catalog(tmp_path):
 def test_cli_lists_skills_without_calling_model(tmp_path):
     env = os.environ.copy()
     env["PYTHONPATH"] = os.getcwd()
+    env["PYTHONIOENCODING"] = "cp1252"
     result = subprocess.run(
         [sys.executable, "-m", "lite", "--cwd", str(tmp_path)],
         input="/skills\n/exit\n",
