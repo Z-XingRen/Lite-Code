@@ -5,6 +5,7 @@ import time
 import uuid
 
 from ..features import memory as memorylib
+from .runtime_journal import open_runtime_journal
 from .workspace import IGNORED_PATH_NAMES, clip, now
 
 CHECKPOINT_SCHEMA_VERSION = "phase1-v1"
@@ -146,4 +147,12 @@ class RuntimeCheckpointsMixin:
         task_state.checkpoint_id = checkpoint_id
         self.session["runtime_identity"] = checkpoint["runtime_identity"]
         self.persist_session()
+        writer = open_runtime_journal(self, migrate_legacy=True)
+        writer.append_tree_entry(
+            "task_checkpoint",
+            {"checkpoint": checkpoint, "trigger": str(trigger)},
+            turn_id=str(getattr(self, "current_turn_id", "") or ""),
+            run_id=str(getattr(self, "current_run_id", "") or ""),
+            created_at=checkpoint["created_at"],
+        )
         return checkpoint

@@ -5,8 +5,10 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 from ..cancellation import CancellationRequested
-from .runtime_journal import runtime_journal_effect, synchronize_runtime_session
+from .runtime_journal import commit_tool_batch_exchange, runtime_journal_effect
 from .tool_execution import finish_tool_call, prepare_tool_call
+from .tool_history import build_tool_history_item
+from .workspace import now
 
 
 @dataclass(frozen=True)
@@ -59,6 +61,7 @@ def execute_parallel_tool_batch(agent, calls):
     ]
     runnable = [item for item in prepared if item.ready]
     executions = {}
+    finalized = {}
     agent._pending_tool_result_metadata = {}
     if runnable:
         with runtime_journal_effect(
@@ -78,33 +81,46 @@ def execute_parallel_tool_batch(agent, calls):
         ) as effect:
             executions = _run_concurrently(agent, runnable)
             outcome = _batch_outcome(agent, executions)
-            effect.complete(
-                outcome,
-                agent.redact_artifact(
-                    {
-                        "results": [
-                            _journal_result(item, executions[item.call_id])
-                            for item in runnable
-                        ]
-                    }
-                ),
+            history_items = []
+            metadata_items = []
+            for item in runnable:
+                execution_result, error = executions[item.call_id]
+                result, metadata = finish_tool_call(
+                    agent,
+                    item,
+                    execution_result=execution_result,
+                    error=error,
+                    consume_pending=False,
+                )
+                history_items.append(
+                    build_tool_history_item(
+                        item.name,
+                        item.args,
+                        result,
+                        item.call_id,
+                        metadata,
+                        created_at=now(),
+                    )
+                )
+                metadata_items.append(metadata)
+                finalized[item.call_id] = ToolBatchOutcome(
+                    result,
+                    {**metadata, "journal_history_committed": True},
+                )
+            commit_tool_batch_exchange(
+                agent,
+                effect,
+                history_items,
+                metadata_items,
+                outcome=outcome,
             )
-        _synchronize_dirty_session(agent)
 
     outcomes = []
     for item in prepared:
         if not item.ready:
             outcomes.append(ToolBatchOutcome(item.result, item.metadata))
             continue
-        execution_result, error = executions[item.call_id]
-        result, metadata = finish_tool_call(
-            agent,
-            item,
-            execution_result=execution_result,
-            error=error,
-            consume_pending=False,
-        )
-        outcomes.append(ToolBatchOutcome(result, metadata))
+        outcomes.append(finalized[item.call_id])
     agent._pending_tool_result_metadata = {}
     return tuple(outcomes)
 
@@ -139,24 +155,3 @@ def _batch_outcome(agent, executions):
     ):
         return "error"
     return "ok"
-
-
-def _journal_result(prepared, execution):
-    result, error = execution
-    return {
-        "call_id": prepared.call_id,
-        "name": prepared.name,
-        "content": result.content if result is not None else "",
-        "is_error": bool(error is not None or (result and result.is_error)),
-        "error_type": type(error).__name__ if error is not None else "",
-    }
-
-
-def _synchronize_dirty_session(agent):
-    writer = getattr(agent, "session_journal_writer", None)
-    if (
-        getattr(agent, "_session_journal_dirty", False)
-        and writer is not None
-        and writer.state.open_operation is None
-    ):
-        synchronize_runtime_session(agent)

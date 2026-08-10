@@ -1,9 +1,11 @@
 """Runtime integration for journal-backed effects and session state."""
 
 import json
+import uuid
 import weakref
 
 from .session_journal_writer import JournalWriterError, SessionJournalWriter
+from .session_tree import project_branch_state
 
 
 def open_runtime_journal(runtime, *, migrate_legacy=False):
@@ -67,9 +69,14 @@ def synchronize_runtime_session(runtime, *, replace_history=False):
     journal_history = list(journal_session.get("history", []))
     if current_history[: len(journal_history)] == journal_history:
         for item in current_history[len(journal_history) :]:
-            writer.append_history(item)
+            writer.append_message(item)
     elif current_history != journal_history and replace_history:
-        writer.replace_history(current_history)
+        writer.append_compaction(
+            current_history,
+            metadata={"source": "runtime_history_replacement"},
+            turn_id=str(getattr(runtime, "current_turn_id", "") or ""),
+            run_id=str(getattr(runtime, "current_run_id", "") or ""),
+        )
     elif current_history != journal_history:
         raise ValueError("runtime history diverged from journal authority")
 
@@ -105,6 +112,78 @@ def attach_runtime_journal(runtime, writer):
     runtime.session_journal_writer = writer
     runtime.session_path = writer.path
     return writer
+
+
+def runtime_tree_rows(runtime):
+    writer = open_runtime_journal(runtime, migrate_legacy=True)
+    return writer.tree_rows()
+
+
+def move_runtime_tree_head(runtime, target, *, reason="branch"):
+    writer = open_runtime_journal(runtime, migrate_legacy=True)
+    entry_id = _resolve_tree_target(writer, target)
+    writer.move_head(entry_id, reason=reason)
+    runtime.session["history"] = _json_compatible(writer.state.session["history"])
+    runtime.session_path = writer.path
+    runtime._last_session_tree_warning = _workspace_drift_warning(runtime, writer)
+    return entry_id
+
+
+def rewind_runtime_tree(runtime, steps=1):
+    writer = open_runtime_journal(runtime, migrate_legacy=True)
+    steps = int(steps)
+    if steps <= 0:
+        raise ValueError("rewind steps must be positive")
+    target = writer.state.tree.active_head
+    for _ in range(steps):
+        if target is None:
+            break
+        target = writer.state.tree.entries[target].parent_id
+    writer.move_head(target, reason=f"rewind:{steps}")
+    runtime.session["history"] = _json_compatible(writer.state.session["history"])
+    runtime.session_path = writer.path
+    runtime._last_session_tree_warning = _workspace_drift_warning(runtime, writer)
+    return target
+
+
+def label_runtime_tree_head(runtime, label):
+    writer = open_runtime_journal(runtime, migrate_legacy=True)
+    if writer.state.tree.active_head is None:
+        raise ValueError("cannot label an empty session tree")
+    return writer.label_head(label)
+
+
+def _resolve_tree_target(writer, target):
+    value = str(target or "").strip()
+    if not value:
+        raise ValueError("tree target is required")
+    if value in writer.state.tree.labels:
+        return writer.state.tree.labels[value]
+    if value in writer.state.tree.entries:
+        return value
+    matches = [entry_id for entry_id in writer.state.tree.entries if entry_id.startswith(value)]
+    if not matches:
+        raise ValueError(f"tree entry not found: {value}")
+    if len(matches) > 1:
+        raise ValueError(f"tree entry prefix is ambiguous: {value}")
+    return matches[0]
+
+
+def _workspace_drift_warning(runtime, writer):
+    checkpoint = project_branch_state(writer.state.tree).get("checkpoint")
+    if not isinstance(checkpoint, dict):
+        return ""
+    identity = checkpoint.get("runtime_identity", {})
+    expected = str(identity.get("workspace_fingerprint", "")) if isinstance(identity, dict) else ""
+    if not expected:
+        expected = str(checkpoint.get("workspace_fingerprint", ""))
+    current = str(runtime.workspace.__class__.build(runtime.root).fingerprint())
+    if expected and expected != current:
+        return (
+            "warning: session context moved, but workspace files were not restored "
+            f"(checkpoint {expected[:12]}, current {current[:12]})"
+        )
+    return ""
 
 
 def _json_compatible(value):
@@ -143,6 +222,112 @@ def runtime_journal_effect(
         request=runtime.redact_artifact(request),
         replay_policy=replay_policy,
     )
+
+
+def commit_tool_exchange(runtime, effect, history_item, metadata):
+    """Commit effect completion and its model-visible tool observation together."""
+
+    return commit_tool_batch_exchange(
+        runtime,
+        effect,
+        [history_item],
+        [metadata],
+    )[0]
+
+
+def commit_tool_batch_exchange(
+    runtime, effect, history_items, metadata_items, *, outcome=None
+):
+    """Atomically commit one assistant tool-call batch and all ordered results."""
+
+    history_items = list(history_items)
+    metadata_items = list(metadata_items)
+    if not history_items or len(history_items) != len(metadata_items):
+        raise ValueError("tool exchange requires one metadata item per result")
+
+    writer = getattr(runtime, "session_journal_writer", None)
+    if writer is None or not hasattr(effect, "intent"):
+        effect.complete(
+            outcome
+            or (
+                "error"
+                if any(item.get("tool_status") != "ok" for item in metadata_items)
+                else "ok"
+            ),
+            runtime.redact_artifact(
+                {
+                    "results": [
+                        {"content": item.get("content", ""), "metadata": metadata}
+                        for item, metadata in zip(history_items, metadata_items)
+                    ]
+                }
+            ),
+        )
+        for item in history_items:
+            runtime.record(item)
+        return history_items
+
+    items = [runtime.turn_history.enrich(item) for item in history_items]
+    fallback_call_id = str(effect.intent.payload["call_id"])
+    for index, item in enumerate(items):
+        call_id = str(item.get("call_id", "") or "")
+        if not call_id and len(items) == 1:
+            call_id = fallback_call_id
+        if not call_id:
+            raise ValueError(f"tool exchange result {index} is missing call_id")
+        item["call_id"] = call_id
+    persisted_items = [runtime.redact_artifact(item) for item in items]
+    entry_id = f"entry_{uuid.uuid4().hex}"
+    assistant = {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {
+                "call_id": item["call_id"],
+                "name": item.get("name", ""),
+                "arguments": runtime.redact_artifact(item.get("args", {})),
+            }
+            for item in items
+        ],
+        "turn_id": items[0].get("turn_id", ""),
+        "run_id": items[0].get("run_id", ""),
+        "created_at": items[0].get("created_at", ""),
+    }
+    tree_delta = {
+        "expected_head": writer.state.tree.active_head,
+        "entries": [
+            {
+                "entry_id": entry_id,
+                "parent_id": writer.state.tree.active_head,
+                "entry_type": "tool_exchange",
+                "turn_id": items[0].get("turn_id", ""),
+                "run_id": items[0].get("run_id", ""),
+                "created_at": items[0].get("created_at", ""),
+                "data": {"assistant": assistant, "results": persisted_items},
+            }
+        ],
+    }
+    effect.complete(
+        outcome
+        or (
+            "error"
+            if any(item.get("tool_status") != "ok" for item in metadata_items)
+            else "ok"
+        ),
+        runtime.redact_artifact(
+            {
+                "results": [
+                    {"content": item.get("content", ""), "metadata": metadata}
+                    for item, metadata in zip(items, metadata_items)
+                ]
+            }
+        ),
+        tree_delta=tree_delta,
+    )
+    runtime.session["history"] = _json_compatible(writer.state.session["history"])
+    runtime.session_path = writer.path
+    runtime._session_journal_dirty = False
+    return items
 
 
 def run_permission_effect(runtime, tool, args, decide, *, call_id=None):

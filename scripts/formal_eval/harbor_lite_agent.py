@@ -50,15 +50,6 @@ class LiteHarborAgent(BaseAgent):
         config = resolve_provider_config(
             "openai", start=ROOT, config_path=str(ROOT / ".lite.toml")
         )
-        if config.model != "gpt-5.5":
-            raise RuntimeError(
-                f"formal Harbor evaluation requires .lite.toml gpt-5.5, got {config.model}"
-            )
-        if config.reasoning_effort != "medium":
-            raise RuntimeError(
-                "formal Harbor evaluation requires reasoning_effort=medium, "
-                f"got {config.reasoning_effort or 'unset'}"
-            )
         if config.protocol != "openai" or not config.api_key:
             raise RuntimeError(
                 "formal Harbor evaluation requires an OpenAI-compatible API key"

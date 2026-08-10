@@ -168,6 +168,10 @@ lite --max-steps 80               # 限制一次请求的工具/模型迭代次�
 | /plan-exit | 退出 plan mode。 |
 | /agents | 查看子 agent 状态。 |
 | /compact | 压缩较早的 session 历史。 |
+| /tree | 查看 append-only Session Tree 和当前 head。 |
+| /branch <entry\|label> | 把会话 head 移到已有节点；下一条消息会形成分支。 |
+| /rewind [steps] | 将 head 回退若干节点，不修改工作区文件。 |
+| /label <name> | 给当前 head 添加稳定标签。 |
 | /clear | 创建新的空 session。 |
 | /exit | 退出 Lite-Code。 |
 
@@ -182,7 +186,8 @@ Lite-Code 的运行状态默认写入工作区的 .lite/，该目录适合本地
 | --- | --- |
 | 项目配置 | .lite.toml |
 | 全局配置 | ~/.config/lite/config.toml |
-| Session | .lite/sessions/<id>.json |
+| 旧 Session / 迁移源 | .lite/sessions/<id>.json |
+| 权威 Session Journal | .lite/sessions/<id>.journal.jsonl |
 | 事件流 | .lite/sessions/<id>.events.jsonl |
 | 运行证据 | .lite/runs/<run_id>/ |
 | Memory 索引 | .lite/memory/MEMORY.md |
@@ -191,6 +196,8 @@ Lite-Code 的运行状态默认写入工作区的 .lite/，该目录适合本地
 | Plan artifacts | .lite/plans/ |
 
 记忆的工作方式和自动 dream 策略见 [docs/memory.md](docs/memory.md)。
+Journal 与 Session Tree 的记录格式、投影和恢复约束见
+[SESSION_TREE.md](SESSION_TREE.md)。
 
 ## Skills
 
@@ -247,6 +254,17 @@ LITE_LIVE_SMOKE=1 python -m pytest tests/test_release_smoke.py -q
 ~~~
 
 真实 provider 测试需要可用的 API key 和 endpoint；普通单元测试不应依赖网络。
+
+采集 Workspace Change Tracker 与 Journal Effect 恢复证据：
+
+~~~bash
+python scripts/run_runtime_evidence.py --output-dir artifacts/runtime-evidence --workspace-file-counts 5000 --workspace-changed-counts 1 --workspace-runs 30 --recovery-repetitions 10
+~~~
+
+该命令执行透明工具的增量追踪/全量快照对照、6 类 Effect × 3
+个崩溃阶段的恢复矩阵，以及 1K/5K/10K Journal scaling，输出三个 JSON
+和 Markdown 摘要。实验完全使用本地确定性路径，不调用真实 provider；
+恢复矩阵默认保留 Journal fsync，scaling 关闭 fsync 以隔离在线投影成本。
 
 ## 项目结构
 

@@ -11,6 +11,7 @@ dependencies = [
   "pydantic>=2.0.0",
   "textual>=0.86.0",
   "tomli>=2.0.0; python_version < '3.11'",
+  "tzdata>=2025.2; sys_platform == 'win32'",
 ]
 
 [project.scripts]
@@ -19,6 +20,8 @@ lite-tui = "lite.tui.main:main"
 
 [dependency-groups]
 dev = [
+  "coverage[toml]>=7.6.0",
+  "mypy>=1.14.0",
   "pytest>=8.3.5",
   "pytest-asyncio>=0.23.0",
   "ruff>=0.4.4",
@@ -28,7 +31,11 @@ dev = [
 include = ["lite*"]
 
 [tool.pytest.ini_options]
+addopts = "-m 'not stress'"
 testpaths = ["tests"]
+markers = [
+  "stress: deterministic long-session and scaling gates run separately in CI",
+]
 norecursedirs = [
   ".git",
   ".lite",
@@ -44,3 +51,31 @@ norecursedirs = [
 
 [tool.ruff]
 extend-exclude = ["benchmarks/formal_v1/fixtures"]
+
+[tool.mypy]
+python_version = "3.10"
+files = [
+  "lite/features/sandbox/config.py",
+  "lite/features/sandbox/checker.py",
+]
+strict = true
+follow_imports = "skip"
+pretty = true
+show_error_codes = true
+
+[tool.coverage.run]
+branch = true
+include = [
+  "lite/core/session_journal*.py",
+  "lite/evaluation/runtime_evidence.py",
+  "lite/features/sandbox/*.py",
+]
+
+[tool.coverage.report]
+exclude_also = [
+  "if TYPE_CHECKING:",
+  "if __name__ == .__main__.:",
+]
+fail_under = 80
+show_missing = true
+skip_covered = true

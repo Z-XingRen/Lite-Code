@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.10", "3.12"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python }}
+          enable-cache: true
+      - run: uv sync --group dev
+      - run: uv run ruff check .
+      - run: uv run mypy
+      - run: uv run python -m pytest -q
+      - name: Critical runtime coverage
+        run: >-
+          uv run python -m coverage run -m pytest -q
+          tests/test_session_journal.py
+          tests/test_session_journal_recovery.py
+          tests/test_session_journal_migration.py
+          tests/test_session_journal_writer.py
+          tests/test_sandbox_config.py
+          tests/test_sandbox_runner.py
+          tests/test_permissions_acceptance.py
+          tests/test_effect_cancellation.py
+          tests/test_safety_invariants.py
+          tests/test_runtime_evidence.py
+      - run: uv run python -m coverage report
+
+  long-session:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - run: uv sync --group dev
+      - run: uv run python -m pytest -m stress -q
+      - name: Archive deterministic runtime evidence
+        run: >-
+          uv run python scripts/run_runtime_evidence.py
+          --output-dir artifacts/runtime-evidence
+          --workspace-runs 10
+          --recovery-repetitions 3
+      - uses: actions/upload-artifact@v4
+        with:
+          name: runtime-evidence
+          path: artifacts/runtime-evidence

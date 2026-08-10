@@ -13,7 +13,7 @@ from .session_journal_reducer import (
     CompletedOperation,
     JournalState,
     OpenOperation,
-    reduce_journal_record,
+    apply_journal_record_in_place,
     replay_journal,
 )
 from .session_journal_schema import (
@@ -23,6 +23,7 @@ from .session_journal_schema import (
     canonical_json,
     json_copy,
 )
+from .session_tree import SessionTreeState, project_history
 
 
 SNAPSHOT_SCHEMA_VERSION = "lite.session_journal.snapshot.v1"
@@ -83,7 +84,7 @@ def restore_session_journal(path, *, snapshot_path=None):
         state, journal_offset = candidate
         tail_index = offsets.index(journal_offset) + 1
         for record in records[tail_index:]:
-            state = reduce_journal_record(state, record)
+            apply_journal_record_in_place(state, record)
         used_snapshot = True
     return JournalRestore(
         state=state,
@@ -247,7 +248,10 @@ def _journal_state_from_dict(value):
         "completed_operations",
         "record_fingerprints",
     }
-    if not isinstance(value, Mapping) or set(value) != required:
+    if not isinstance(value, Mapping) or frozenset(value) not in {
+        frozenset(required),
+        frozenset(required | {"tree"}),
+    }:
         raise ValueError("invalid snapshot state fields")
     if value["schema_version"] != JOURNAL_SCHEMA_VERSION:
         raise ValueError("unsupported snapshot state schema")
@@ -261,6 +265,14 @@ def _journal_state_from_dict(value):
     if not isinstance(value["session"], Mapping):
         raise ValueError("snapshot session must be an object")
     session = json_copy(dict(value["session"]))
+    tree_value = value.get("tree")
+    if tree_value is None:
+        # A pre-tree snapshot cannot prove that nodes hidden by an earlier
+        # history_replaced record were retained. Fall back to full replay.
+        raise ValueError("snapshot predates the session tree projection")
+    tree = SessionTreeState.from_dict(tree_value)
+    if session.get("history", []) != project_history(tree):
+        raise ValueError("snapshot session history does not match active tree")
     open_operation = _open_operation_from_dict(value["open_operation"])
     completed = value["completed_operations"]
     if not isinstance(completed, Mapping):
@@ -290,6 +302,7 @@ def _journal_state_from_dict(value):
         schema_version=JOURNAL_SCHEMA_VERSION,
         last_sequence=last_sequence,
         session=session,
+        tree=tree,
         open_operation=open_operation,
         completed_operations=completed_operations,
         record_fingerprints=dict(fingerprints),
@@ -330,7 +343,12 @@ def _completed_operation_from_dict(operation_id, value):
         "intent_sequence",
         "result_sequence",
     }
-    _validate_operation_fields(value, required)
+    if not isinstance(value, Mapping) or frozenset(value) not in {
+        frozenset(required),
+        frozenset(required | {"tree_entry_ids"}),
+    }:
+        raise ValueError("invalid operation fields")
+    _validate_operation_fields({key: value[key] for key in required}, required)
     if not isinstance(operation_id, str) or value["operation_id"] != operation_id:
         raise ValueError("completed operation id mismatch")
     if value["outcome"] not in {"ok", "error", "interrupted"}:
@@ -344,6 +362,11 @@ def _completed_operation_from_dict(operation_id, value):
         or result_sequence <= value["intent_sequence"]
     ):
         raise ValueError("invalid completed operation sequence")
+    tree_entry_ids = value.get("tree_entry_ids", [])
+    if not isinstance(tree_entry_ids, list) or not all(
+        isinstance(entry_id, str) and entry_id for entry_id in tree_entry_ids
+    ):
+        raise ValueError("invalid completed operation tree entries")
     return CompletedOperation(
         operation_id=operation_id,
         effect_type=value["effect_type"],
@@ -354,6 +377,7 @@ def _completed_operation_from_dict(operation_id, value):
         result=json_copy(dict(value["result"])),
         intent_sequence=value["intent_sequence"],
         result_sequence=result_sequence,
+        tree_entry_ids=tuple(tree_entry_ids),
     )
 
 

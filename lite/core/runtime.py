@@ -33,7 +33,11 @@ from .workspace_change_tracker import WorkspaceChangeTracker
 from .runtime_events import build_runtime_event
 from .runtime_journal import (
     attach_runtime_journal,
+    label_runtime_tree_head,
+    move_runtime_tree_head,
     open_runtime_journal,
+    rewind_runtime_tree,
+    runtime_tree_rows,
     synchronize_runtime_session,
 )
 from .runtime_secrets import REDACTED_VALUE, RuntimeSecretsMixin
@@ -271,6 +275,24 @@ class Lite(RuntimeSecretsMixin, RuntimeCheckpointsMixin):
 
     def _ensure_session_shape(self):
         self.session.setdefault("history", [])
+        event_sequences = []
+        manual_turn_sequences = []
+        for item in self.session["history"]:
+            event_id = str(item.get("event_id", ""))
+            turn_id = str(item.get("turn_id", ""))
+            if event_id.startswith("event_") and event_id[6:].isdigit():
+                event_sequences.append(int(event_id[6:]))
+            if turn_id.startswith("manual_") and turn_id[7:].isdigit():
+                manual_turn_sequences.append(int(turn_id[7:]))
+        self.session["_event_seq"] = max(
+            [int(self.session.get("_event_seq", 0) or 0), *event_sequences]
+        )
+        self.session["_manual_turn_seq"] = max(
+            [
+                int(self.session.get("_manual_turn_seq", 0) or 0),
+                *manual_turn_sequences,
+            ]
+        )
         self.session.setdefault("memory", memorylib.default_memory_state())
         checkpoints = self.session.setdefault("checkpoints", {})
         if not isinstance(checkpoints, dict):
@@ -647,6 +669,18 @@ class Lite(RuntimeSecretsMixin, RuntimeCheckpointsMixin):
 
     def attach_session_journal(self, writer):
         return attach_runtime_journal(self, writer)
+
+    def session_tree_rows(self):
+        return runtime_tree_rows(self)
+
+    def move_session_head(self, target, *, reason="branch"):
+        return move_runtime_tree_head(self, target, reason=reason)
+
+    def rewind_session(self, steps=1):
+        return rewind_runtime_tree(self, steps)
+
+    def label_session_head(self, label):
+        return label_runtime_tree_head(self, label)
 
     def persist_session(self, *, replace_history=False):
         self.session_path = synchronize_runtime_session(

@@ -4,10 +4,15 @@ import hashlib
 import os
 import threading
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 from ..cancellation import CancellationRequested
-from .session_journal_reducer import JournalState, reduce_journal_record
+from .session_journal_reducer import (
+    JournalState,
+    apply_prepared_journal_record,
+    prepare_journal_record,
+)
 from .session_journal_recovery import (
     recovery_actions_from_state,
     restore_session_journal,
@@ -19,12 +24,19 @@ from .session_journal_schema import (
     EFFECT_RESULT,
     HISTORY_APPENDED,
     HISTORY_REPLACED,
+    HEAD_MOVED,
     JOURNAL_SCHEMA_VERSION,
     SESSION_CREATED,
     SESSION_UPDATED,
+    TREE_ENTRY_APPENDED,
+    TREE_LABEL_UPDATED,
     JournalRecord,
     canonical_json,
 )
+from .session_tree import SessionTreeEntry, tree_rows
+
+
+_ACTIVE_HEAD = object()
 
 
 class JournalWriterError(RuntimeError):
@@ -108,6 +120,82 @@ class SessionJournalWriter:
             record_id=record_id,
         )
 
+    def append_tree_entry(
+        self,
+        entry_type,
+        data,
+        *,
+        parent_id=_ACTIVE_HEAD,
+        entry_id=None,
+        turn_id="",
+        run_id="",
+        created_at=None,
+        operation_id=None,
+        record_id=None,
+    ):
+        """Append one node to the active branch and advance its head."""
+
+        if parent_id is _ACTIVE_HEAD:
+            parent_id = self.state.tree.active_head
+        entry = SessionTreeEntry.from_dict(
+            {
+                "entry_id": entry_id or _new_id("entry"),
+                "parent_id": parent_id,
+                "entry_type": entry_type,
+                "turn_id": str(turn_id or ""),
+                "run_id": str(run_id or ""),
+                "created_at": created_at or datetime.now(timezone.utc).isoformat(),
+                "data": dict(data),
+            }
+        )
+        self._append_mutation(
+            TREE_ENTRY_APPENDED,
+            {"entry": entry.to_dict()},
+            operation_id=operation_id,
+            record_id=record_id,
+        )
+        return entry
+
+    def append_message(self, item, **kwargs):
+        value = dict(item)
+        return self.append_tree_entry(
+            "message",
+            {"message": value},
+            turn_id=value.get("turn_id", ""),
+            run_id=value.get("run_id", ""),
+            created_at=value.get("created_at") or None,
+            **kwargs,
+        )
+
+    def append_compaction(self, history, *, metadata=None, **kwargs):
+        return self.append_tree_entry(
+            "compaction",
+            {"history": list(history), "metadata": dict(metadata or {})},
+            **kwargs,
+        )
+
+    def move_head(self, target_entry_id, *, reason="branch", operation_id=None, record_id=None):
+        self._append_mutation(
+            HEAD_MOVED,
+            {"target_entry_id": target_entry_id, "reason": str(reason or "")},
+            operation_id=operation_id,
+            record_id=record_id,
+        )
+        return self.state.tree.active_head
+
+    def label_head(self, label, *, entry_id=None, operation_id=None, record_id=None):
+        target = entry_id or self.state.tree.active_head
+        self._append_mutation(
+            TREE_LABEL_UPDATED,
+            {"label": label, "entry_id": target},
+            operation_id=operation_id,
+            record_id=record_id,
+        )
+        return target
+
+    def tree_rows(self):
+        return tree_rows(self.state.tree)
+
     def write_snapshot(self):
         with self.effect(
             "snapshot",
@@ -173,16 +261,19 @@ class SessionJournalWriter:
             self._operation_lock.release()
             raise
 
-    def finish_effect(self, intent, *, outcome, result):
+    def finish_effect(self, intent, *, outcome, result, tree_delta=None):
         try:
+            payload = {
+                "effect_type": intent.payload["effect_type"],
+                "call_id": intent.payload["call_id"],
+                "outcome": outcome,
+                "result": result,
+            }
+            if tree_delta is not None:
+                payload["tree_delta"] = tree_delta
             return self._append_record(
                 EFFECT_RESULT,
-                {
-                    "effect_type": intent.payload["effect_type"],
-                    "call_id": intent.payload["call_id"],
-                    "outcome": outcome,
-                    "result": result,
-                },
+                payload,
                 operation_id=intent.operation_id,
             )
         finally:
@@ -222,9 +313,9 @@ class SessionJournalWriter:
                 kind=kind,
                 payload=dict(payload),
             )
-            next_state = reduce_journal_record(self.state, record)
+            transition = prepare_journal_record(self.state, record)
             self._write_line(record)
-            self.state = next_state
+            apply_prepared_journal_record(self.state, transition)
             return record
 
     def _write_line(self, record):
@@ -345,15 +436,17 @@ class JournalEffect:
         )
         self._completed = False
 
-    def complete(self, outcome, result=None):
+    def complete(self, outcome, result=None, *, tree_delta=None):
         if self._completed:
             raise JournalWriterError("journal effect is already complete")
         self._completed = True
-        return self.writer.finish_effect(
-            self.intent,
-            outcome=outcome,
-            result=dict(result or {}),
-        )
+        kwargs = {
+            "outcome": outcome,
+            "result": dict(result or {}),
+        }
+        if tree_delta is not None:
+            kwargs["tree_delta"] = tree_delta
+        return self.writer.finish_effect(self.intent, **kwargs)
 
     def __enter__(self):
         return self

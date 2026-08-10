@@ -16,6 +16,9 @@ HISTORY_REPLACED = "history_replaced"
 SESSION_UPDATED = "session_updated"
 EFFECT_INTENT = "effect_intent"
 EFFECT_RESULT = "effect_result"
+TREE_ENTRY_APPENDED = "tree_entry_appended"
+HEAD_MOVED = "head_moved"
+TREE_LABEL_UPDATED = "tree_label_updated"
 
 JOURNAL_RECORD_KINDS = frozenset(
     {
@@ -25,6 +28,9 @@ JOURNAL_RECORD_KINDS = frozenset(
         SESSION_UPDATED,
         EFFECT_INTENT,
         EFFECT_RESULT,
+        TREE_ENTRY_APPENDED,
+        HEAD_MOVED,
+        TREE_LABEL_UPDATED,
     }
 )
 EFFECT_TYPES = frozenset(

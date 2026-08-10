@@ -22,6 +22,7 @@ from .tool_batch_scheduler import (
     execute_parallel_tool_batch,
     parallel_batch_eligible,
 )
+from .tool_history import build_tool_history_item
 from .workspace import clip, now
 
 
@@ -95,36 +96,11 @@ def commit_tool_payload(
             "duration_ms": tool_duration_ms,
         },
     )
-    history_item = {
-        "role": "tool",
-        "name": name,
-        "args": args,
-        "content": tool_result,
-        "call_id": call_id,
-        "created_at": now(),
-        "tool_status": str(tool_metadata.get("tool_status", "")),
-        "tool_error_code": str(tool_metadata.get("tool_error_code", "")),
-        "workspace_changed": bool(tool_metadata.get("workspace_changed", False)),
-        "affected_paths": list(tool_metadata.get("affected_paths", []) or []),
-    }
-    if tool_metadata.get("full_output_artifact"):
-        history_item.update(
-            {
-                "artifact_ref": tool_metadata["full_output_artifact"],
-                "original_chars": int(tool_metadata.get("original_chars", 0) or 0),
-                "original_bytes": int(tool_metadata.get("original_bytes", 0) or 0),
-                "original_lines": int(tool_metadata.get("original_lines", 0) or 0),
-                "omitted_bytes": int(tool_metadata.get("omitted_bytes", 0) or 0),
-                "omitted_lines": int(tool_metadata.get("omitted_lines", 0) or 0),
-                "truncation_strategy": str(
-                    tool_metadata.get("truncation_strategy", "")
-                ),
-                "content_sha256": str(tool_metadata.get("content_sha256", "")),
-            }
-        )
-    if tool_metadata.get("media_refs"):
-        history_item["media_refs"] = list(tool_metadata.get("media_refs", []) or [])
-    agent.record(history_item)
+    history_item = build_tool_history_item(
+        name, args, tool_result, call_id, tool_metadata, created_at=now()
+    )
+    if not tool_metadata.get("journal_history_committed"):
+        agent.record(history_item)
     notifications = engine.drain_worker_notifications()
     for notification in notifications:
         yield {

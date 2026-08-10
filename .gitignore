@@ -58,20 +58,7 @@ notes/
 !.lite.toml.example
 
 # Local docs not intended for publication
-docs/**
-!docs/
-!docs/configuration.md
-!docs/memory.md
-!docs/skills.md
-!docs/sandbox.md
-!docs/agent-runtime-optimization.md
-!docs/agent-runtime-optimization-progress.md
-!docs/agent-runtime-optimization-v2.md
-!docs/agent-runtime-optimization-progress-v2.md
-!docs/resume-materials.md
-!docs/README-optimization-v2.md
-!docs/evaluation-summary.md
-!docs/COMPLETION-REPORT.md
+docs/
 
 # OS files
 .DS_Store

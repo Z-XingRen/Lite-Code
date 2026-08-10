@@ -29,7 +29,7 @@ from .providers.errors import sanitize_url
 from .providers.runtime import ProviderClientClasses, build_provider_runtime
 from .core.model_router import ModelClientRouter
 from .core.runtime import Lite, SessionStore
-from .core.workspace import WorkspaceContext, middle, now
+from .core.workspace import WorkspaceContext, clip, middle, now
 
 DEFAULT_SECRET_ENV_NAMES = (
     "LITE_API_KEY",
@@ -402,7 +402,7 @@ def build_arg_parser():
     )
     parser.add_argument(
         "--sandbox-backend",
-        choices=("auto", "bubblewrap", "none"),
+        choices=("auto", "bubblewrap", "sandbox-exec", "docker", "podman", "none"),
         default=None,
         help="Sandbox backend for run_shell.",
     )
@@ -533,6 +533,35 @@ def handle_repl_command(agent, user_input):
     if user_input == "/clear":
         session_id = agent.clear_session()
         return True, False, f"new session {session_id}"
+    if command_name == "tree":
+        return True, False, _format_session_tree(agent)
+    if command_name == "branch":
+        if not command_args:
+            return True, False, "Usage: /branch <entry|label>"
+        try:
+            entry_id = agent.move_session_head(command_args, reason="branch")
+        except (RuntimeError, ValueError) as exc:
+            return True, False, f"error: {exc}"
+        warning = str(getattr(agent, "_last_session_tree_warning", "") or "")
+        output = f"active branch: {entry_id}"
+        return True, False, f"{output}\n{warning}" if warning else output
+    if command_name == "rewind":
+        try:
+            steps = int(command_args or "1")
+            entry_id = agent.rewind_session(steps)
+        except (RuntimeError, ValueError) as exc:
+            return True, False, f"error: {exc}"
+        warning = str(getattr(agent, "_last_session_tree_warning", "") or "")
+        output = f"active head: {entry_id or '<root>'}"
+        return True, False, f"{output}\n{warning}" if warning else output
+    if command_name == "label":
+        if not command_args or any(character.isspace() for character in command_args):
+            return True, False, "Usage: /label <name>"
+        try:
+            entry_id = agent.label_session_head(command_args)
+        except (RuntimeError, ValueError) as exc:
+            return True, False, f"error: {exc}"
+        return True, False, f"labeled {entry_id} as {command_args}"
     if command_name == "compact":
         return True, False, _handle_compact(agent, command_args)
     if user_input == "/reset":
@@ -665,6 +694,32 @@ def _format_usage(agent):
         lines.append(
             f"context replacement cache hits: {int(orchestrator.get('replacement_cache_hits', 0) or 0)}"
         )
+    return "\n".join(lines)
+
+
+def _format_session_tree(agent):
+    try:
+        rows = agent.session_tree_rows()
+    except (RuntimeError, ValueError) as exc:
+        return f"error: {exc}"
+    if not rows:
+        return "Session tree:\n* <root> (active)"
+    lines = ["Session tree (append order; * active path, @ head):"]
+    for row in rows[-200:]:
+        marker = "@" if row["head"] else "*" if row["active"] else " "
+        entry_id = row["entry_id"]
+        parent = row["parent_id"] or "<root>"
+        labels = f" [{', '.join(row['labels'])}]" if row["labels"] else ""
+        data = row.get("data", {})
+        message = data.get("message", {}) if isinstance(data, dict) else {}
+        preview = str(message.get("content", "")).replace("\n", " ").strip()
+        preview = clip(preview, 72) if preview else ""
+        suffix = f" — {preview}" if preview else ""
+        lines.append(
+            f"{marker} {entry_id} <- {parent} {row['entry_type']}{labels}{suffix}"
+        )
+    if len(rows) > 200:
+        lines.insert(1, f"... {len(rows) - 200} older entries omitted ...")
     return "\n".join(lines)
 
 

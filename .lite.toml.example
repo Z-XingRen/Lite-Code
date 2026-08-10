@@ -30,9 +30,12 @@ strict_tools = false
 mode = "off"
 backend = "auto"
 workspace_write = true
+network_access = false
+container_image = "python:3.12-slim"
 excluded_commands = []
 
 [sandbox.filesystem]
 extra_readonly_paths = []
+extra_writable_paths = []
 deny_read = []
 deny_write = []

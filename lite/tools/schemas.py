@@ -11,7 +11,14 @@ from __future__ import annotations
 import copy
 from typing import List, Optional, Union
 
-from pydantic import BaseModel, ConfigDict, ValidationError, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 
 def provider_input_schema(model):
@@ -91,6 +98,18 @@ class InspectImageArgs(BaseModel):
 class RunShellArgs(BaseModel):
     command: str
     timeout: int = 20
+    network_access: Optional[bool] = Field(
+        default=None,
+        description="Request network access for this command only.",
+    )
+    additional_readonly_paths: List[str] = Field(
+        default_factory=list,
+        description="Absolute host paths to mount read-only for this command only.",
+    )
+    additional_writable_paths: List[str] = Field(
+        default_factory=list,
+        description="Absolute host paths to mount writable for this command only.",
+    )
 
     @field_validator("command")
     @classmethod
@@ -105,6 +124,13 @@ class RunShellArgs(BaseModel):
         if v < 1 or v > 120:
             raise ValueError("timeout must be in [1, 120]")
         return v
+
+    @field_validator("additional_readonly_paths", "additional_writable_paths")
+    @classmethod
+    def paths_not_empty(cls, values: List[str]) -> List[str]:
+        if any(not str(value).strip() for value in values):
+            raise ValueError("sandbox expansion paths must not be empty")
+        return values
 
 
 class WriteFileArgs(BaseModel):

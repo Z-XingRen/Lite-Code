@@ -97,7 +97,10 @@ BASE_TOOL_SPECS = {
     },
     "run_shell": {
         "risky": True,
-        "description": "Run a shell command in the repo root.",
+        "description": (
+            "Run a shell command in the repo root. Network and host paths are "
+            "sandboxed by default; request one-command access explicitly when needed."
+        ),
     },
     "write_file": {
         "risky": True,
@@ -303,6 +306,9 @@ def tool_run_shell(agent, args):
             env=agent.shell_env(),
             timeout=timeout,
             cancellation_token=getattr(agent, "current_cancellation_token", None),
+            network_access=args.get("network_access"),
+            additional_readonly_paths=args.get("additional_readonly_paths", ()),
+            additional_writable_paths=args.get("additional_writable_paths", ()),
         )
     return textwrap.dedent(
         f"""\

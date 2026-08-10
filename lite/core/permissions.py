@@ -55,8 +55,10 @@ class PermissionChecker:
             return PermissionDecision.allow("read_only")
         if self.runtime.read_only:
             return PermissionDecision.deny("approval_denied", "read_only_block")
+        expansion = tool.name == "run_shell" and _requests_sandbox_expansion(args)
         if self.runtime.approval_policy == "auto":
-            return PermissionDecision.allow("approval_auto")
+            reason = "approval_auto_sandbox_expansion" if expansion else "approval_auto"
+            return PermissionDecision.allow(reason)
         if self.runtime.approval_policy == "never":
             return PermissionDecision.deny("approval_denied", "approval_denied")
         if self.runtime.approve(tool.name, args):
@@ -84,3 +86,11 @@ class PermissionChecker:
             except ValueError:
                 continue
         return PermissionDecision.deny("write_scope_mismatch", "write_scope_guard")
+
+
+def _requests_sandbox_expansion(args):
+    return bool(
+        args.get("network_access") is True
+        or args.get("additional_readonly_paths")
+        or args.get("additional_writable_paths")
+    )

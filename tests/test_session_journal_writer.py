@@ -185,6 +185,37 @@ def test_failed_append_does_not_advance_in_memory_state(tmp_path, monkeypatch):
         writer.close()
 
 
+def test_online_append_does_not_deepcopy_existing_session(tmp_path, monkeypatch):
+    history = [
+        {"role": "user", "content": f"history-{index}"}
+        for index in range(5000)
+    ]
+    path = tmp_path / "projection.journal.jsonl"
+    writer = SessionJournalWriter.create(path, session(history=history), sync=False)
+    try:
+        from lite.core import session_journal_reducer
+
+        original_deepcopy = session_journal_reducer.copy.deepcopy
+        existing_session = writer.state.session
+
+        def reject_existing_state_copy(value, *args, **kwargs):
+            if value is existing_session:
+                raise AssertionError("online projection copied existing state")
+            return original_deepcopy(value, *args, **kwargs)
+
+        monkeypatch.setattr(
+            "lite.core.session_journal_reducer.copy.deepcopy",
+            reject_existing_state_copy,
+        )
+
+        writer.append_history({"role": "assistant", "content": "bounded"})
+
+        assert len(writer.state.session["history"]) == 5001
+        assert writer.state.session["history"][-1]["content"] == "bounded"
+    finally:
+        writer.close()
+
+
 def test_runtime_history_uses_journal_without_legacy_rewrite(tmp_path):
     agent, store = build_agent(tmp_path)
     writer = attach_writer(agent, store)

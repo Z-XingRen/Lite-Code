@@ -78,13 +78,27 @@ def provider_metadata():
     config = resolve_provider_config(
         "openai", start=ROOT, config_path=ROOT / ".lite.toml"
     )
-    if config.model != "gpt-5.5":
-        raise RuntimeError(f"formal benchmark requires gpt-5.5, got {config.model}")
     if config.protocol != "openai" or not config.api_key:
         raise RuntimeError(
             "formal benchmark requires an OpenAI-compatible provider with API key"
         )
     return config
+
+
+def select_tasks(manifest, task_ids="", limit=0):
+    tasks = list(manifest["tasks"])
+    requested = [item.strip() for item in str(task_ids).split(",") if item.strip()]
+    if requested:
+        by_id = {task["id"]: task for task in tasks}
+        missing = [task_id for task_id in requested if task_id not in by_id]
+        if missing:
+            raise ValueError(f"unknown formal task ids: {', '.join(missing)}")
+        tasks = [by_id[task_id] for task_id in requested]
+    if int(limit) > 0:
+        tasks = tasks[: int(limit)]
+    if not tasks:
+        raise ValueError("formal task selection is empty")
+    return {**manifest, "tasks": tasks}
 
 
 def make_client(config):
@@ -406,6 +420,7 @@ def run_live(manifest, out_dir, repetitions):
         + hashlib.sha256(MANIFEST.read_bytes()).hexdigest(),
         "grader_sha256": "sha256:" + hashlib.sha256(GRADER.read_bytes()).hexdigest(),
         "task_count": len(manifest["tasks"]),
+        "task_ids": [task["id"] for task in manifest["tasks"]],
         "repetitions": repetitions,
         "provider": {
             "name": config.name,
@@ -417,7 +432,43 @@ def run_live(manifest, out_dir, repetitions):
             "api_key_present": bool(config.api_key),
         },
     }
-    (out_dir / "evaluation-manifest.json").write_text(
+    evaluation_manifest_path = out_dir / "evaluation-manifest.json"
+    if rows:
+        if not evaluation_manifest_path.is_file():
+            raise RuntimeError(
+                "partial formal rows have no evaluation manifest; use a fresh output directory"
+            )
+        prior = json.loads(evaluation_manifest_path.read_text(encoding="utf-8"))
+        identity_fields = (
+            "benchmark_manifest_sha256",
+            "grader_sha256",
+            "task_count",
+            "repetitions",
+        )
+        provider_fields = ("protocol", "model", "reasoning_effort", "strict_tools")
+        prior_task_ids = prior.get("task_ids")
+        legacy_task_ids_match = prior_task_ids is None and {
+            row["task_id"] for row in rows
+        } == set(eval_manifest["task_ids"])
+        task_ids_match = (
+            prior_task_ids == eval_manifest["task_ids"] or legacy_task_ids_match
+        )
+        if (
+            not task_ids_match
+            or any(
+                prior.get(field) != eval_manifest[field]
+                for field in identity_fields
+            )
+            or any(
+                prior.get("provider", {}).get(field)
+                != eval_manifest["provider"][field]
+                for field in provider_fields
+            )
+        ):
+            raise RuntimeError(
+                "formal output identity changed; use a fresh output directory"
+            )
+    evaluation_manifest_path.write_text(
         json.dumps(eval_manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
     for repeat in range(repetitions):
@@ -490,8 +541,14 @@ def main():
     parser.add_argument("--mode", choices=["qualification", "live"], required=True)
     parser.add_argument("--repetitions", type=int, default=3)
     parser.add_argument("--output-dir", default=str(ARTIFACT_ROOT))
+    parser.add_argument(
+        "--task-ids",
+        default="",
+        help="Optional comma-separated fixed task ids; order is preserved.",
+    )
+    parser.add_argument("--limit", type=int, default=0)
     args = parser.parse_args()
-    manifest = load_manifest()
+    manifest = select_tasks(load_manifest(), args.task_ids, args.limit)
     out_dir = Path(args.output_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     if args.mode == "qualification":

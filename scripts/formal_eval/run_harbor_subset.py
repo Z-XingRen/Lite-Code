@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 from urllib.parse import urlparse
@@ -29,26 +30,31 @@ def _provider_config():
     config = resolve_provider_config(
         "openai", start=ROOT, config_path=str(ROOT / ".lite.toml")
     )
-    if config.model != "gpt-5.5" or config.reasoning_effort != "medium":
-        raise RuntimeError(
-            "Harbor formal runs require .lite.toml model=gpt-5.5 and "
-            "reasoning_effort=medium"
-        )
     if config.protocol != "openai" or not config.api_key:
         raise RuntimeError("Harbor formal runs require an OpenAI-compatible API key")
     return config
 
 
-def build_command(subset_name: str, agent: str) -> tuple[list[str], Path]:
+def build_command(
+    subset_name: str,
+    agent: str,
+    *,
+    max_tasks: int = 0,
+    artifact_root: Path = ARTIFACT_ROOT,
+) -> tuple[list[str], Path]:
     if subset_name not in SUBSET_DIRS:
         raise ValueError(f"unknown subset: {subset_name}")
     payload = json.loads(MANIFEST.read_text(encoding="utf-8"))
     subset = payload["subsets"][subset_name]
-    output = ARTIFACT_ROOT / SUBSET_DIRS[subset_name]
+    output = artifact_root / SUBSET_DIRS[subset_name]
     output.mkdir(parents=True, exist_ok=True)
-    job_name = (
-        f"{subset_name}-{agent}-gpt-5-5" if agent == "lite" else f"{subset_name}-oracle"
+    config = _provider_config() if agent == "lite" else None
+    model_slug = (
+        "-".join(part for part in config.model.lower().replace(".", "-").split("-") if part)
+        if config
+        else "oracle"
     )
+    job_name = f"{subset_name}-{agent}-{model_slug}"
     command = [
         str(HARBOR_EXE),
         "run",
@@ -76,24 +82,72 @@ def build_command(subset_name: str, agent: str) -> tuple[list[str], Path]:
         "3",
     ]
     if agent == "lite":
-        config = _provider_config()
         command.extend(["--model", f"openai/{config.model}"])
         hostname = urlparse(config.base_url).hostname
         if hostname:
             command.extend(["--allow-agent-host", hostname])
-    for task in subset["tasks"]:
+    tasks = list(subset["tasks"])
+    if max_tasks > 0:
+        tasks = tasks[:max_tasks]
+    for task in tasks:
         command.extend(["--include-task-name", task["task_id"]])
     return command, output
+
+
+def preflight():
+    checks = {
+        "harbor_executable": HARBOR_EXE.is_file(),
+        "registry": REGISTRY.is_file(),
+        "subset_manifest": MANIFEST.is_file(),
+        "docker_cli": bool(shutil.which("docker")),
+        "docker_daemon": False,
+    }
+    detail = ""
+    if checks["docker_cli"]:
+        try:
+            completed = subprocess.run(
+                ["docker", "info"],
+                capture_output=True,
+                text=True,
+                timeout=20,
+                check=False,
+            )
+            checks["docker_daemon"] = completed.returncode == 0
+            detail = (completed.stderr or completed.stdout)[-1000:]
+        except (OSError, subprocess.SubprocessError) as exc:
+            detail = f"{type(exc).__name__}: {exc}"
+    return {
+        "checks": checks,
+        "ready": all(checks.values()),
+        "detail": detail,
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--subset", choices=sorted(SUBSET_DIRS), required=True)
     parser.add_argument("--agent", choices=("oracle", "lite"), required=True)
+    parser.add_argument("--max-tasks", type=int, default=0)
+    parser.add_argument("--output-dir", default=str(ARTIFACT_ROOT))
+    parser.add_argument("--preflight-only", action="store_true")
     args = parser.parse_args(argv)
-    if not HARBOR_EXE.is_file():
-        raise RuntimeError(f"Harbor executable not found: {HARBOR_EXE}")
-    command, output = build_command(args.subset, args.agent)
+    artifact_root = Path(args.output_dir).resolve()
+    output = artifact_root / SUBSET_DIRS[args.subset]
+    output.mkdir(parents=True, exist_ok=True)
+    readiness = preflight()
+    (output / "preflight.json").write_text(
+        json.dumps(readiness, ensure_ascii=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    if args.preflight_only or not readiness["ready"]:
+        print(json.dumps(readiness, ensure_ascii=True))
+        return 0 if readiness["ready"] else 2
+    command, output = build_command(
+        args.subset,
+        args.agent,
+        max_tasks=args.max_tasks,
+        artifact_root=artifact_root,
+    )
     env = {
         **os.environ,
         "PYTHONPATH": str(ROOT),

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import random
 import statistics
+from datetime import datetime, timezone
 from pathlib import Path
 
 from lite.config import load_project_env, resolve_provider_config
@@ -26,8 +28,8 @@ def client_factory(**_):
     config = resolve_provider_config(
         "openai", start=ROOT, config_path=ROOT / ".lite.toml"
     )
-    if config.model != "gpt-5.5" or not config.api_key:
-        raise RuntimeError("context A/B requires configured gpt-5.5")
+    if config.protocol != "openai" or not config.api_key:
+        raise RuntimeError("context A/B requires a configured OpenAI-compatible model")
     return OpenAICompatibleModelClient(
         model=config.model,
         base_url=config.base_url,
@@ -54,6 +56,7 @@ def bootstrap_ci(values, *, samples=5000, seed=20260806):
 
 
 def paired_metrics(rows):
+    minimum_claim_pairs = 10
     index = {(r["task_id"], int(r["repeat"]), r["variant"]): r for r in rows}
     pairs = []
     for task_id, repeat, _ in sorted(
@@ -106,8 +109,9 @@ def paired_metrics(rows):
         "break_even_pair_rate": sum(p["break_even"] for p in pairs) / len(pairs)
         if pairs
         else 0,
+        "minimum_claim_pairs": minimum_claim_pairs,
         "claimable_reduction": bool(
-            valid
+            len(valid) >= minimum_claim_pairs
             and len(valid) / len(pairs) >= 0.95
             and not any(p["quality_regression"] for p in pairs)
             and bootstrap_ci(billable)[1] < 0
@@ -116,14 +120,97 @@ def paired_metrics(rows):
     }
 
 
+def ensure_evaluation_identity(out, config, tasks, repetitions):
+    identity = {
+        "schema_version": "lite.context_ab_identity.v1",
+        "model": config.model,
+        "reasoning_effort": config.reasoning_effort,
+        "protocol": config.protocol,
+        "task_ids": [task["id"] for task in tasks],
+        "repetitions": int(repetitions),
+        "variants": list(VARIANTS),
+        "task_source_sha256": "sha256:"
+        + hashlib.sha256(TASKS.read_bytes()).hexdigest(),
+    }
+    manifest_path = out / "evaluation-manifest.json"
+    partial_path = out / "rows.partial.json"
+    if manifest_path.is_file():
+        prior = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if prior.get("identity") != identity:
+            raise RuntimeError(
+                "context A/B output identity changed; use a fresh output directory"
+            )
+        return
+    adopted = False
+    if partial_path.is_file():
+        results_path = out / "results.json"
+        if not results_path.is_file():
+            raise RuntimeError(
+                "context A/B partial rows have no evaluation identity or results"
+            )
+        prior_results = json.loads(results_path.read_text(encoding="utf-8"))
+        prior_model = prior_results.get("model", {})
+        observed_keys = {
+            (row["task_id"], int(row["repeat"]), row["variant"])
+            for row in prior_results.get("rows", [])
+        }
+        expected_keys = {
+            (task["id"], repeat, variant)
+            for task in tasks
+            for repeat in range(int(repetitions))
+            for variant in VARIANTS
+        }
+        if (
+            prior_model.get("model") != config.model
+            or prior_model.get("reasoning_effort") != config.reasoning_effort
+            or observed_keys != expected_keys
+        ):
+            raise RuntimeError(
+                "context A/B partial rows belong to a different evaluation identity"
+            )
+        adopted = True
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "identity": identity,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "adopted_pre_identity_results": adopted,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--repetitions", type=int, default=3)
     parser.add_argument("--output-dir", default=str(OUT))
+    parser.add_argument("--task-ids", default="")
+    parser.add_argument("--limit", type=int, default=0)
     args = parser.parse_args()
     tasks = json.loads(TASKS.read_text(encoding="utf-8"))["tasks"]
+    requested = [
+        item.strip() for item in args.task_ids.split(",") if item.strip()
+    ]
+    if requested:
+        by_id = {task["id"]: task for task in tasks}
+        missing = [task_id for task_id in requested if task_id not in by_id]
+        if missing:
+            raise ValueError(f"unknown context A/B task ids: {', '.join(missing)}")
+        tasks = [by_id[task_id] for task_id in requested]
+    if args.limit > 0:
+        tasks = tasks[: args.limit]
+    if not tasks:
+        raise ValueError("context A/B task selection is empty")
+    config = resolve_provider_config(
+        "openai", start=ROOT, config_path=ROOT / ".lite.toml"
+    )
     out = Path(args.output_dir).resolve()
     out.mkdir(parents=True, exist_ok=True)
+    ensure_evaluation_identity(out, config, tasks, args.repetitions)
     partial = out / "rows.partial.json"
     rows = json.loads(partial.read_text(encoding="utf-8")) if partial.is_file() else []
     completed = {(r["task_id"], int(r["repeat"]), r["variant"]) for r in rows}
@@ -173,13 +260,21 @@ def main():
                 )
     payload = build_result_payload(
         [_row_from_dict(r) for r in rows],
-        pricing_profile="gpt-5.5-live-configured",
+        pricing_profile=f"{config.model}-live-configured",
         pricing=DEFAULT_PROXY_PRICING,
         treatment="full_orchestrator",
         control="no_context_reduction",
     )
     metrics = paired_metrics(payload["rows"])
     payload["formal_metrics"] = metrics
+    payload["model"] = {
+        "provider": config.name,
+        "protocol": config.protocol,
+        "model": config.model,
+        "reasoning_effort": config.reasoning_effort,
+        "base_url": config.base_url,
+        "api_key_present": bool(config.api_key),
+    }
     (out / "results.json").write_text(
         json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
     )

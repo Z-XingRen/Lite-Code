@@ -19,6 +19,16 @@ from .session_journal_schema import (
     JournalSchemaError,
 )
 from .session_journal_writer import JournalWriterError, SessionJournalWriter
+from .session_tree import (
+    SESSION_TREE_SCHEMA_VERSION,
+    TREE_ENTRY_TYPES,
+    SessionTreeEntry,
+    SessionTreeState,
+    active_path,
+    project_branch_state,
+    project_history,
+    tree_rows,
+)
 
 __all__ = [
     "JOURNAL_SCHEMA_VERSION",
@@ -32,6 +42,14 @@ __all__ = [
     "JournalWriterError",
     "OpenOperation",
     "SessionJournalWriter",
+    "SESSION_TREE_SCHEMA_VERSION",
+    "TREE_ENTRY_TYPES",
+    "SessionTreeEntry",
+    "SessionTreeState",
+    "active_path",
+    "project_branch_state",
+    "project_history",
+    "tree_rows",
     "reduce_journal_record",
     "restore_session_journal",
     "replay_journal",
