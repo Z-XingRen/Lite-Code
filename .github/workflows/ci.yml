@@ -33,6 +33,7 @@ jobs:
           tests/test_session_journal_recovery.py
           tests/test_session_journal_migration.py
           tests/test_session_journal_writer.py
+          tests/test_session_tree.py
           tests/test_sandbox_config.py
           tests/test_sandbox_runner.py
           tests/test_permissions_acceptance.py
