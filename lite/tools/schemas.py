@@ -133,6 +133,37 @@ class RunShellArgs(BaseModel):
         return values
 
 
+class VerifyArgs(BaseModel):
+    """Arguments for a workspace-aware verification command."""
+
+    command: str = Field(
+        default="",
+        description=(
+            "Optional project verification command. Leave empty to select a "
+            "workspace-aware default such as the current Python -m pytest."
+        ),
+    )
+    timeout: int = 120
+    covered_paths: List[str] = Field(
+        default_factory=list,
+        description="Paths this verification is intended to cover, relative to the workspace.",
+    )
+
+    @field_validator("timeout")
+    @classmethod
+    def timeout_in_range(cls, v: int) -> int:
+        if v < 1 or v > 120:
+            raise ValueError("timeout must be in [1, 120]")
+        return v
+
+    @field_validator("covered_paths")
+    @classmethod
+    def paths_not_empty(cls, values: List[str]) -> List[str]:
+        if any(not str(value).strip() for value in values):
+            raise ValueError("covered_paths must not contain empty paths")
+        return values
+
+
 class WriteFileArgs(BaseModel):
     path: str
     content: str

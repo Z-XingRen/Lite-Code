@@ -176,6 +176,50 @@ class TestRunShellValidation:
 
 
 # ---------------------------------------------------------------------------
+# verify
+# ---------------------------------------------------------------------------
+
+class TestVerifyValidation:
+    def test_defaults_are_valid(self, tmp_path):
+        agent = build_agent(tmp_path)
+        agent.validate_tool("verify", {})
+
+    def test_explicit_coverage_paths_are_valid(self, tmp_path):
+        (tmp_path / "src").mkdir()
+        agent = build_agent(tmp_path)
+        agent.validate_tool(
+            "verify",
+            {"command": "python -m pytest -q", "covered_paths": ["src"]},
+        )
+
+    def test_non_verification_command_raises(self, tmp_path):
+        agent = build_agent(tmp_path)
+        with pytest.raises(ValueError, match="not recognized"):
+            agent.validate_tool("verify", {"command": "echo not-a-check"})
+
+    def test_timeout_at_boundaries_valid(self, tmp_path):
+        agent = build_agent(tmp_path)
+        agent.validate_tool("verify", {"timeout": 1})
+        agent.validate_tool("verify", {"timeout": 120})
+
+    @pytest.mark.parametrize("timeout", [0, 121])
+    def test_timeout_outside_boundaries_raises(self, tmp_path, timeout):
+        agent = build_agent(tmp_path)
+        with pytest.raises(ValueError, match="timeout"):
+            agent.validate_tool("verify", {"timeout": timeout})
+
+    def test_empty_covered_path_raises(self, tmp_path):
+        agent = build_agent(tmp_path)
+        with pytest.raises(ValueError, match="covered_paths"):
+            agent.validate_tool("verify", {"covered_paths": [""]})
+
+    def test_covered_path_escape_raises(self, tmp_path):
+        agent = build_agent(tmp_path)
+        with pytest.raises(ValueError, match="path escapes workspace"):
+            agent.validate_tool("verify", {"covered_paths": ["../outside.py"]})
+
+
+# ---------------------------------------------------------------------------
 # write_file
 # ---------------------------------------------------------------------------
 

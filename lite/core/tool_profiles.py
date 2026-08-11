@@ -40,7 +40,7 @@ def build_tool_profiles(tools):
         - coordinator_tools
         - mode_tools
         - interactive_tools
-        - frozenset({"run_shell"})
+        - frozenset({"run_shell", "verify"})
     )
     return {
         "default": ToolSetProfile("default", all_tools),

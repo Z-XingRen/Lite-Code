@@ -525,6 +525,12 @@ class Lite(RuntimeSecretsMixin, RuntimeCheckpointsMixin):
         # prefix 可以理解成 agent 的“工作手册”：
         # 它是谁、怎样工作、当前仓库是什么状态，都写在这里。工具结构由
         # Provider 的原生 tools 字段承载，不再复制进 prompt。
+        shell_name = (
+            "cmd.exe"
+            if os.name == "nt"
+            else "/bin/sh"
+        )
+        platform_name = "Windows" if os.name == "nt" else os.name
         text = textwrap.dedent(
             f"""\
             You are lite, a small local coding agent working inside a local repository.
@@ -540,7 +546,11 @@ class Lite(RuntimeSecretsMixin, RuntimeCheckpointsMixin):
             - When writing tests, match the current implementation unless the user explicitly asked you to change the code.
             - New files should be complete and runnable, including obvious imports.
             - Do not repeat the same tool call with the same arguments if it did not help. Choose a different tool or return a final answer.
-            - Required tool arguments must not be empty. Do not call read_file, write_file, patch_file, run_shell, or agent with args={{}}.
+            - Required tool arguments must not be empty. Do not call read_file, write_file, patch_file, run_shell, verify, or agent with args={{}}.
+            - Prefer patch_file or write_file for edits; do not invoke apply_patch through run_shell.
+            - Use verify for tests, lint, typecheck, or build verification. For Python, its default uses the current interpreter with python -m pytest.
+            - Runtime platform: {platform_name}; run_shell uses {shell_name} in cwd {self.root}.
+            - On Windows, do not use POSIX heredocs or commands such as `cd /d ... && pytest`; tools already run in the workspace root.
             - Use agent for bounded subagents. Explore is read-only; worker writes must stay inside write_scope.
             - Use send_message to continue an existing worker instead of spawning a fresh worker with missing context.
             - {skillslib.SKILL_FILE_CREATION_GUIDE}

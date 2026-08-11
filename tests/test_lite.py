@@ -1170,6 +1170,17 @@ def test_prompt_metadata_refreshes_prefix_when_workspace_changes(tmp_path):
     assert "demo changed" in agent.prefix
 
 
+def test_runtime_prefix_explains_shell_and_verification_contract(tmp_path):
+    agent = build_agent(tmp_path, [])
+
+    assert "Use verify for tests, lint, typecheck, or build verification" in agent.prefix
+    assert "do not invoke apply_patch through run_shell" in agent.prefix
+    assert f"in cwd {tmp_path}" in agent.prefix
+    if os.name == "nt":
+        assert "Runtime platform: Windows; run_shell uses cmd.exe" in agent.prefix
+        assert "do not use POSIX heredocs" in agent.prefix
+
+
 def test_agent_creates_checkpoint_when_context_reduction_happens_and_artifacts_only_reference_it(tmp_path):
     agent = build_agent(tmp_path, ["<final>Done after checkpoint.</final>"])
     for index in range(10):

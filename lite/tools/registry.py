@@ -5,12 +5,21 @@
 """
 
 import json
+import os
+import shlex
 import shutil
+import subprocess
+import sys
 import textwrap
 from functools import partial
 
 from pydantic import ValidationError
 
+from ..core.verification import (
+    VERIFICATION_RECEIPT_SCHEMA,
+    classify_verification_command,
+    workspace_revision,
+)
 from ..core.workspace import IGNORED_PATH_NAMES
 from ..features.sandbox.process import run_cancellable_process
 from . import media as media_tools
@@ -52,6 +61,7 @@ from .schemas import (
     PatchFileArgs,
     ReadFileArgs,
     RunShellArgs,
+    VerifyArgs,
     SearchArgs,
     SendMessageArgs,
     TaskStopArgs,
@@ -69,6 +79,7 @@ _TOOL_SCHEMAS = {
     "search": SearchArgs,
     "inspect_image": InspectImageArgs,
     "run_shell": RunShellArgs,
+    "verify": VerifyArgs,
     "write_file": WriteFileArgs,
     "patch_file": PatchFileArgs,
     "todo_add": TodoAddArgs,
@@ -98,8 +109,21 @@ BASE_TOOL_SPECS = {
     "run_shell": {
         "risky": True,
         "description": (
-            "Run a shell command in the repo root. Network and host paths are "
-            "sandboxed by default; request one-command access explicitly when needed."
+            "Run a command in the workspace root using the host shell. On Windows "
+            "this is cmd.exe, not a POSIX shell; do not use heredocs. Prefer "
+            "patch_file/write_file for edits and python -m pytest for Python tests. "
+            "Network and host paths are sandboxed by default; request one-command "
+            "access explicitly when needed."
+        ),
+    },
+    "verify": {
+        "risky": True,
+        "description": (
+            "Run project verification in the workspace root and return a structured "
+            "VerificationReceipt. On Windows the default Python verification uses "
+            "the current interpreter (python -m pytest -q), avoiding pytest launcher "
+            "path/import problems. Provide command only when the project needs a "
+            "different test, lint, build, or typecheck command."
         ),
     },
     "write_file": {
@@ -122,6 +146,7 @@ TOOL_EXAMPLES = {
     "read_file": {"path": "README.md", "start": 1, "end": 80},
     "search": {"pattern": "binary_search", "path": "."},
     "run_shell": {"command": "uv run --with pytest python -m pytest -q", "timeout": 20},
+    "verify": {"command": "", "timeout": 120, "covered_paths": []},
     "write_file": {"path": "binary_search.py", "content": "def binary_search(nums, target):\n    return -1\n"},
     "patch_file": {"path": "binary_search.py", "old_text": "return -1", "new_text": "return mid"},
     **media_tools.MEDIA_TOOL_EXAMPLES,
@@ -176,6 +201,13 @@ def validate_tool(agent, name, args):
 
     elif name == "search":
         agent.path(args.get("path", "."))
+
+    elif name == "verify":
+        command = str(args.get("command", "")).strip()
+        if command:
+            _validate_verification_command(command)
+        for path in args.get("covered_paths", []):
+            agent.path(path)
 
     elif name in media_tools.MEDIA_TOOL_NAMES:
         media_tools.validate_media_runtime(agent, name, args)
@@ -287,9 +319,66 @@ def tool_run_shell(agent, args):
     timeout = int(args.get("timeout", 20))
     if timeout < 1 or timeout > 120:
         raise ValueError("timeout must be in [1, 120]")
+    result = _run_workspace_command(agent, command, args, timeout)
+    return _format_command_result(result)
+
+
+def tool_verify(agent, args):
+    """Run a project check and attach a machine-readable verification receipt."""
+
+    command = str(args.get("command", "")).strip() or discover_verification_command(
+        agent.root
+    )
+    command_class = _validate_verification_command(command)
+    timeout = int(args.get("timeout", 120))
+    covered_paths = [
+        agent.path(path).relative_to(agent.root).as_posix()
+        for path in args.get("covered_paths", [])
+    ]
+    result = _run_workspace_command(agent, command, args, timeout)
+    exit_code = int(result.returncode)
+    changed_paths = list(
+        getattr(getattr(agent, "current_task_state", None), "changed_paths", []) or []
+    )
+    if not covered_paths:
+        covered_paths = list(changed_paths)
+    coverage_confidence = (
+        "declared"
+        if args.get("covered_paths")
+        else "inferred_changed_paths"
+        if changed_paths
+        else "unknown"
+    )
+    receipt = {
+        "schema_version": VERIFICATION_RECEIPT_SCHEMA,
+        "command": command,
+        "command_class": command_class,
+        "exit_code": exit_code,
+        "workspace_revision": workspace_revision(agent.root),
+        "covered_paths": covered_paths,
+        "after_mutation_sequence": _last_mutation_sequence(agent),
+        "coverage_confidence": coverage_confidence,
+    }
+    agent._pending_tool_result_metadata = {
+        "verification_receipt": receipt,
+    }
+    return textwrap.dedent(
+        f"""\
+        exit_code: {exit_code}
+        verification_receipt:
+        {json.dumps(receipt, ensure_ascii=False, sort_keys=True)}
+        stdout:
+        {result.stdout.strip() or "(empty)"}
+        stderr:
+        {result.stderr.strip() or "(empty)"}
+        """
+    ).strip()
+
+
+def _run_workspace_command(agent, command, args, timeout):
     runner = getattr(agent, "sandbox_runner", None)
     if runner is None:
-        result = run_cancellable_process(
+        return run_cancellable_process(
             command,
             cwd=agent.root,
             shell=True,
@@ -299,17 +388,19 @@ def tool_run_shell(agent, args):
             env=agent.shell_env(),
             cancellation_token=getattr(agent, "current_cancellation_token", None),
         )
-    else:
-        result = runner.run(
-            command,
-            cwd=agent.root,
-            env=agent.shell_env(),
-            timeout=timeout,
-            cancellation_token=getattr(agent, "current_cancellation_token", None),
-            network_access=args.get("network_access"),
-            additional_readonly_paths=args.get("additional_readonly_paths", ()),
-            additional_writable_paths=args.get("additional_writable_paths", ()),
-        )
+    return runner.run(
+        command,
+        cwd=agent.root,
+        env=agent.shell_env(),
+        timeout=timeout,
+        cancellation_token=getattr(agent, "current_cancellation_token", None),
+        network_access=args.get("network_access"),
+        additional_readonly_paths=args.get("additional_readonly_paths", ()),
+        additional_writable_paths=args.get("additional_writable_paths", ()),
+    )
+
+
+def _format_command_result(result):
     return textwrap.dedent(
         f"""\
         exit_code: {result.returncode}
@@ -319,6 +410,69 @@ def tool_run_shell(agent, args):
         {result.stderr.strip() or "(empty)"}
         """
     ).strip()
+
+
+def discover_verification_command(root):
+    """Choose a local verification command without invoking a platform launcher."""
+
+    root = root.resolve()
+    package_json = root / "package.json"
+    if package_json.is_file():
+        try:
+            scripts = json.loads(package_json.read_text(encoding="utf-8")).get(
+                "scripts", {}
+            )
+        except (OSError, ValueError):
+            scripts = {}
+        if isinstance(scripts, dict) and scripts.get("test"):
+            manager = (
+                "pnpm" if (root / "pnpm-lock.yaml").exists()
+                else "yarn" if (root / "yarn.lock").exists()
+                else "npm"
+            )
+            return f"{manager} test"
+    if (root / "go.mod").is_file():
+        return "go test ./..."
+    if (root / "Cargo.toml").is_file():
+        return "cargo test"
+    if (
+        (root / "pyproject.toml").is_file()
+        or (root / "pytest.ini").is_file()
+        or (root / "tox.ini").is_file()
+        or (root / "tests").is_dir()
+        or any(root.glob("test_*.py"))
+    ):
+        return f"{_quote_argument(sys.executable)} -m pytest -q"
+    raise ValueError("no default verification command found; provide verify.command")
+
+
+def _quote_argument(value):
+    if os.name == "nt":
+        return subprocess.list2cmdline([str(value)])
+    return shlex.quote(str(value))
+
+
+def _validate_verification_command(command):
+    command_class = classify_verification_command(command)
+    if not command_class:
+        raise ValueError(
+            "verify.command is not recognized as a test, lint, typecheck, "
+            "compile, or build command; use run_shell for other commands"
+        )
+    return command_class
+
+
+def _last_mutation_sequence(agent):
+    signal = dict(
+        getattr(getattr(agent, "current_task_state", None), "evidence_summaries", {})
+        .get("verification_signal", {})
+        or {}
+    )
+    span_id = str(signal.get("last_workspace_change_span_id", ""))
+    try:
+        return int(span_id.rsplit("_", 1)[-1])
+    except (TypeError, ValueError):
+        return 0
 
 
 def tool_write_file(agent, args):
@@ -351,6 +505,7 @@ _TOOL_RUNNERS = {
     "read_file": tool_read_file,
     "search": tool_search,
     "run_shell": tool_run_shell,
+    "verify": tool_verify,
     "write_file": tool_write_file,
     "patch_file": tool_patch_file,
     "todo_add": tool_todo_add,

@@ -109,6 +109,7 @@ def test_plan_mode_switches_tool_profile_and_allows_only_active_plan_file(tmp_pa
     assert plan_path == ".lite/plans/v3-plan.md"
     assert agent.active_tool_profile.name == "plan"
     assert "run_shell" not in agent.active_tool_profile.allowed_tools
+    assert "verify" not in agent.active_tool_profile.allowed_tools
 
     rejected = agent.run_tool(
         "write_file", {"path": "src.py", "content": "print('no')\n"}

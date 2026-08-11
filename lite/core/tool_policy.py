@@ -45,12 +45,13 @@ class ToolPolicyChecker:
             path = self.runtime.path(args.get("path", ""))
             if path.exists() and path.is_file() and not self._has_fresh_read(args.get("path", "")):
                 return self._prior_read_required(tool.name, args.get("path", ""))
-        if tool.name == "run_shell":
+        if tool.name in {"run_shell", "verify"}:
             command = str(args.get("command", "")).strip()
             if SHELL_SEARCH_RE.search(command):
                 return ToolPolicyDecision.deny(
                     "shell_search_should_use_tool",
-                    "error: run_shell is not for ordinary workspace search/read; use search, read_file, or list_files first",
+                    f"error: {tool.name} is not for ordinary workspace search/read; "
+                    "use search, read_file, or list_files first",
                 )
         return ToolPolicyDecision.allow()
 

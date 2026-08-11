@@ -75,6 +75,9 @@ def test_registered_tools_expose_conservative_effect_classification(tmp_path):
     assert agent.tools["patch_file"].effect_class == "mutating"
     assert agent.tools["run_shell"].effect_class == "opaque"
     assert agent.tools["run_shell"].execution_mode == "sequential"
+    assert agent.tools["verify"].effect_class == "opaque"
+    assert agent.tools["verify"].execution_mode == "sequential"
+    assert "verify" not in agent.tool_profiles["worker"].allowed_tools
     assert all(
         tool.execution_mode == "sequential"
         for name, tool in agent.tools.items()
