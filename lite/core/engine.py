@@ -33,6 +33,11 @@ from .workspace import clip, now
 CHECKPOINT_NONE_STATUS = "no-checkpoint"
 CHECKPOINT_PARTIAL_STALE_STATUS = "partial-stale"
 CHECKPOINT_WORKSPACE_MISMATCH_STATUS = "workspace-mismatch"
+FINAL_ONLY_NOTICE = (
+    "The per-turn tool budget is exhausted. No tools are available for this request. "
+    "Return the best accurate final answer now, including verification limitations "
+    "or remaining work when applicable."
+)
 
 
 class Engine:
@@ -119,10 +124,16 @@ class Engine:
         attempts = 0
         provider_retries = {}
         conversation = None
+        final_only_attempted = False
         # 不放大 attempts，避免出现"看不见的隐形重试"——失败必须被用户察觉。
         max_attempts = agent.max_steps + 2
 
-        while tool_steps < agent.max_steps and attempts < max_attempts:
+        while attempts < max_attempts and (
+            tool_steps < agent.max_steps or not final_only_attempted
+        ):
+            final_only = tool_steps >= agent.max_steps
+            if final_only:
+                final_only_attempted = True
             if agent.abort_requested:
                 yield from finish_stopped_run(
                     self,
@@ -136,6 +147,8 @@ class Engine:
             notifications = yield from self._drain_worker_notification_events()
             if conversation is not None and notifications:
                 conversation.add_feedback(*notifications)
+            if final_only and conversation is not None:
+                conversation.add_feedback(FINAL_ONLY_NOTICE)
             attempts += 1
             task_state.record_attempt()
             agent.run_store.write_task_state(task_state)
@@ -143,7 +156,10 @@ class Engine:
             prompt, prompt_metadata = agent._build_prompt_and_metadata(user_message)
             try:
                 conversation, request_context = rebuild_model_request(
-                    agent, prompt, conversation
+                    agent,
+                    prompt,
+                    conversation,
+                    tools=() if final_only else None,
                 )
             except Exception as exc:
                 yield from finish_request_context_error(
@@ -152,6 +168,7 @@ class Engine:
                 )
                 return
             prompt_metadata["request_context"] = request_context
+            prompt_metadata["final_only"] = final_only
             if commit_proposed_replacements(agent.session, prompt_metadata):
                 agent.persist_session(replace_history=True)
             agent.emit_trace(
@@ -235,6 +252,7 @@ class Engine:
                 {
                     "attempts": task_state.attempts,
                     "tool_steps": task_state.tool_steps,
+                    "final_only": final_only,
                     "prompt_cache_key": prompt_metadata.get("prompt_cache_key"),
                 },
             )
@@ -244,6 +262,7 @@ class Engine:
                     "run_id": task_state.run_id,
                     "attempts": task_state.attempts,
                     "tool_steps": task_state.tool_steps,
+                    "final_only": final_only,
                 },
             )
             yield {
@@ -251,6 +270,7 @@ class Engine:
                 "run_id": task_state.run_id,
                 "attempts": task_state.attempts,
                 "tool_steps": task_state.tool_steps,
+                "final_only": final_only,
             }
 
             prompt_cache_key = None

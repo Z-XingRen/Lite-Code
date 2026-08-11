@@ -9,6 +9,8 @@ from .tool_policy import ToolPolicyChecker
 from .tool_repetition import repeated_tool_call_metadata
 from .tool_result_artifacts import prepare_tool_result_observation
 
+_COMMAND_TOOLS = frozenset({"run_shell", "verify"})
+
 
 @dataclass
 class PreparedToolCall:
@@ -166,7 +168,7 @@ def finish_tool_call(
                 getattr(agent, "_pending_tool_result_metadata", {}) or {}
             )
             agent._pending_tool_result_metadata = {}
-        exit_code = run_shell_exit_code(full_result) if name == "run_shell" else 0
+        exit_code = run_shell_exit_code(full_result) if name in _COMMAND_TOOLS else 0
         result, artifact_metadata = prepare_tool_result_observation(
             agent, name, full_result
         )
@@ -178,7 +180,7 @@ def finish_tool_call(
         )
         workspace_changed = bool(affected_paths)
         status, error_code = "ok", ""
-        if name == "run_shell" and exit_code != 0:
+        if name in _COMMAND_TOOLS and exit_code != 0:
             status = "partial_success" if workspace_changed else "error"
             error_code = "tool_partial_success" if workspace_changed else "tool_failed"
         agent.update_memory_after_tool(name, prepared.args, result)
@@ -202,7 +204,7 @@ def finish_tool_call(
         )
         workspace_changed = bool(affected_paths)
         security_event = "path_escape" if "path escapes workspace" in str(exc) else ""
-        if name == "run_shell" and "sandbox required but unavailable" in str(exc):
+        if name in _COMMAND_TOOLS and "sandbox required but unavailable" in str(exc):
             record_governance_decision(
                 agent,
                 name,

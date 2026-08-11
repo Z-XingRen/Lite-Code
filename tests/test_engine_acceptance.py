@@ -196,3 +196,57 @@ def test_verification_signal_passes_after_workspace_verification(tmp_path):
     assert signal["covers_changed_paths"] is False
     assert signal["coverage_confidence"] == "unknown"
     assert "notes/result.py" in signal["changed_paths"]
+
+
+def test_verify_tool_runs_default_python_check_and_records_receipt(tmp_path):
+    (tmp_path / "pyproject.toml").write_text(
+        "[tool.pytest.ini_options]\ntestpaths = ['tests']\n",
+        encoding="utf-8",
+    )
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "test_smoke.py").write_text(
+        "def test_smoke():\n    assert True\n",
+        encoding="utf-8",
+    )
+    agent = build_agent(
+        tmp_path,
+        [
+            {"name": "verify", "args": {}},
+            "Verification passed.",
+        ],
+        max_steps=2,
+    )
+
+    events = list(agent.engine.run_turn("verify this Python project"))
+
+    assert events[-2]["content"] == "Verification passed."
+    tool_result = next(event for event in events if event["type"] == "tool_result")
+    receipt = tool_result["metadata"]["verification_receipt"]
+    assert receipt["schema_version"] == "lite.verification_receipt.v1"
+    assert receipt["command_class"] == "test"
+    assert receipt["exit_code"] == 0
+    assert receipt["command"].startswith(shell_join([sys.executable]))
+    assert "-m pytest -q" in receipt["command"]
+    assert receipt["workspace_revision"].startswith("sha256:")
+
+    report = json.loads(
+        (agent.current_run_dir / "report.json").read_text(encoding="utf-8")
+    )
+    signal = report["evidence_summaries"]["verification_signal"]
+    assert signal["state"] == "passed"
+    assert signal["verification_receipt"] == receipt
+
+
+def test_verify_tool_rejects_non_verification_commands_before_execution(tmp_path):
+    agent = build_agent(tmp_path, [])
+
+    result = agent.run_tool(
+        "verify",
+        {"command": "echo bypass>owned.txt", "timeout": 20},
+    )
+
+    assert "not recognized" in result
+    assert not (tmp_path / "owned.txt").exists()
+    assert agent._last_tool_result_metadata["tool_status"] == "rejected"
+    assert agent._last_tool_result_metadata["tool_error_code"] == "invalid_arguments"

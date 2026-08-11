@@ -59,14 +59,15 @@ def finish_request_context_error(
     )
 
 
-def rebuild_model_request(agent, prompt, previous=None):
+def rebuild_model_request(agent, prompt, previous=None, *, tools=None):
     """Build, transform, and harden a fresh request view for one provider call."""
 
     token = agent.current_cancellation_token
     token.raise_if_cancelled()
+    selected_tools = tuple(agent.model_tools()) if tools is None else tuple(tools)
     conversation = ModelConversation(
         initial_input=copy.deepcopy(prompt),
-        tools=tuple(agent.model_tools()),
+        tools=selected_tools,
         turns=copy.deepcopy(list(getattr(previous, "turns", ()) or ())),
     )
     messages = conversation_messages(conversation)

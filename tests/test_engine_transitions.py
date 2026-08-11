@@ -314,7 +314,7 @@ def test_plan_notice_transition_preserves_runtime_notice_stream_order(tmp_path):
     ]
 
 
-def test_step_limit_triggers_graceful_summary_when_model_complies(tmp_path):
+def test_step_limit_uses_a_tools_disabled_final_only_request(tmp_path):
     agent = build_agent(
         tmp_path,
         [
@@ -326,10 +326,21 @@ def test_step_limit_triggers_graceful_summary_when_model_complies(tmp_path):
 
     events = list(agent.engine.run_turn("trigger step limit"))
 
-    stop_event = next(e for e in events if e["type"] == "stop")
-    assert "已经列出文件" in stop_event["content"]
-    assert "step 预算上限" in stop_event["content"]
-    assert "Stopped after reaching the step limit" not in stop_event["content"]
+    final_event = next(e for e in events if e["type"] == "final")
+    assert "已经列出文件" in final_event["content"]
+    assert events[-1]["stop_reason"] == "final_answer_returned"
+    assert len(agent.model_client.requests) == 2
+    assert agent.model_client.requests[0].tools
+    assert agent.model_client.requests[1].tools == ()
+
+    requested = [e for e in events if e["type"] == "model_requested"]
+    assert [e["final_only"] for e in requested] == [False, True]
+    trace = read_jsonl(agent.current_run_dir / "trace.jsonl")
+    trace_requested = [e for e in trace if e["event"] == "model_requested"]
+    assert [e["final_only"] for e in trace_requested] == [False, True]
+    assert [
+        e["reason"] for e in trace if e["event"] == "loop_transition"
+    ] == ["tool_batch_executed", "final_answer_returned"]
 
 
 def test_step_limit_falls_back_to_cold_message_when_summary_fails(tmp_path):
