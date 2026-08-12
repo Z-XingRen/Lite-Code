@@ -1,7 +1,5 @@
 """Final-answer readiness gate over TaskState evidence."""
 
-import hashlib
-
 from .final_readiness_artifacts import (
     extract_required_artifact_paths as extract_required_artifact_paths,
     summarize_required_artifacts as summarize_required_artifacts,
@@ -11,70 +9,42 @@ from .final_readiness_reasons import (
     reason_message,
     reason_severity,
 )
-from .final_readiness_tools import (
-    changed_code_without_test_verification,
-    readiness_reasons,
-    verification_is_fresh,
-)
+from .final_readiness_tools import readiness_reasons
 
 VALID_MODES = {"off", "warn", "enforce"}
-LEGACY_MODE_ALIASES = {"soft", "strict", "verify"}
-VERIFY_HARD_REASONS = {
-    "changed_paths_without_verification",
-    "changed_code_without_test_verification",
-    "failed_verification",
-    "partial_success_workspace_changed",
-    "missing_required_artifact",
+LEGACY_MODE_ALIASES = {
+    "soft": "warn",
+    "strict": "enforce",
+    "verify": "enforce",
 }
 
 
 def evaluate_final_readiness(task_state, mode, workspace_root=None):
+    summaries = dict(task_state.evidence_summaries or {})
+    if summaries.pop("final_readiness_state", None) is not None:
+        task_state.evidence_summaries = summaries
     requested_mode = str(mode or "warn")
-    legacy_mode = requested_mode in LEGACY_MODE_ALIASES
-    mode = requested_mode
-    if mode not in VALID_MODES and not legacy_mode:
+    mode = LEGACY_MODE_ALIASES.get(requested_mode, requested_mode)
+    if mode not in VALID_MODES:
         mode = "warn"
-    reasons = readiness_reasons(task_state, workspace_root=workspace_root)
-    if mode == "verify" and changed_code_without_test_verification(task_state):
-        if "changed_code_without_test_verification" not in reasons:
-            reasons.append("changed_code_without_test_verification")
-    if not legacy_mode:
-        reasons = _canonical_reasons(task_state, reasons)
-    signature = _reason_signature(reasons)
-    state = _state(task_state)
-    reminded = set(state.get("reminded_reason_signatures", []))
-    already_sent = bool(signature and signature in reminded)
+    reasons = (
+        []
+        if mode == "off"
+        else readiness_reasons(task_state, workspace_root=workspace_root)
+    )
     decision = "allow"
     action = "none"
     if reasons and mode == "warn":
         decision = "warn"
-    elif reasons and mode == "soft":
-        decision, action = ("warn", "none") if already_sent else ("remind", "runtime_notice")
-        if not already_sent:
-            reminded.add(signature)
-    elif reasons and mode == "strict":
-        decision, action = (
-            ("block", "block") if any(reason_severity(reason) == "hard" for reason in reasons) else ("warn", "none")
-        )
-    elif reasons and mode == "verify":
-        enforceable = any(reason in VERIFY_HARD_REASONS for reason in reasons)
-        if enforceable:
-            decision, action = (
-                ("block", "block") if already_sent else ("remind", "runtime_notice")
-            )
-            if not already_sent:
-                reminded.add(signature)
+    elif reasons and mode == "enforce":
+        if any(reason_severity(reason) == "hard" for reason in reasons):
+            decision, action = "block", "block"
         else:
             decision = "warn"
-    elif reasons and mode == "enforce":
-        decision, action = "block", "block"
-    state["reminded_reason_signatures"] = sorted(reminded)
     return {
         "mode": mode,
         "decision": decision,
         "reasons": reasons,
-        "reason_signature": signature,
-        "reminder_already_sent": already_sent,
         "action": action,
         "required_artifact_summary": dict(
             (task_state.evidence_summaries or {}).get("required_artifact_summary", {})
@@ -96,44 +66,12 @@ def readiness_notice(decision):
 
 def reduce_final_readiness_summary(summary, event):
     summary = dict(summary or {})
+    summary.pop("remind_count", None)
     summary.setdefault("schema_version", FINAL_READINESS_SUMMARY_SCHEMA)
     decision = str(event.get("decision", ""))
     summary[f"{decision}_count"] = int(summary.get(f"{decision}_count", 0) or 0) + 1
-    for missing in ("allow_count", "warn_count", "remind_count", "block_count"):
+    for missing in ("allow_count", "warn_count", "block_count"):
         summary.setdefault(missing, 0)
     summary["last_decision"] = decision
     summary["last_reasons"] = list(event.get("reasons", []) or [])
     return summary
-
-
-def _reason_signature(reasons):
-    if not reasons:
-        return ""
-    return hashlib.sha256("|".join(sorted(reasons)).encode("utf-8")).hexdigest()[:16]
-
-
-def _state(task_state):
-    summaries = dict(task_state.evidence_summaries or {})
-    state = dict(summaries.get("final_readiness_state", {}) or {})
-    summaries["final_readiness_state"] = state
-    task_state.evidence_summaries = summaries
-    return state
-
-
-def _canonical_reasons(task_state, reasons):
-    verification_reasons = {
-        "changed_paths_without_verification",
-        "changed_code_without_test_verification",
-        "failed_verification",
-    }
-    if not task_state.changed_paths:
-        return [reason for reason in reasons if reason not in verification_reasons]
-    if verification_is_fresh(task_state):
-        return [reason for reason in reasons if reason not in verification_reasons]
-    result = [reason for reason in reasons if reason not in verification_reasons]
-    insert_at = next(
-        (index for index, reason in enumerate(reasons) if reason in verification_reasons),
-        len(result),
-    )
-    result.insert(min(insert_at, len(result)), "verification_required")
-    return list(dict.fromkeys(result))

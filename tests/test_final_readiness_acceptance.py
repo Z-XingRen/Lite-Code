@@ -28,11 +28,11 @@ def read_jsonl(path):
     ]
 
 
-def test_soft_final_readiness_does_not_warn_for_low_pressure_missing_provider_usage(tmp_path):
+def test_warn_final_readiness_allows_low_pressure_missing_provider_usage(tmp_path):
     agent = build_agent(
         tmp_path,
         ["<final>done</final>"],
-        final_readiness_mode="soft",
+        final_readiness_mode="warn",
     )
 
     events = list(agent.engine.run_turn("answer directly"))
@@ -46,58 +46,55 @@ def test_soft_final_readiness_does_not_warn_for_low_pressure_missing_provider_us
     ]
 
 
-def test_soft_final_readiness_reminds_once_then_allows_unchanged_final(tmp_path):
+def test_warn_final_readiness_records_one_decision_without_an_extra_model_call(tmp_path):
     agent = build_agent(
         tmp_path,
         [
             '<tool name="write_file" path="notes/result.txt"><content>ok\n</content></tool>',
             "<final>Done without verification.</final>",
-            "<final>Done without verification.</final>",
         ],
-        final_readiness_mode="soft",
+        final_readiness_mode="warn",
         max_steps=3,
     )
 
     events = list(agent.engine.run_turn("write the result"))
 
-    assert [event["type"] for event in events if event["type"] == "runtime_notice"] == [
-        "runtime_notice"
-    ]
+    assert not [event for event in events if event["type"] == "runtime_notice"]
     assert events[-2]["type"] == "final"
     assert events[-2]["content"] == "Done without verification."
 
     trace = read_jsonl(agent.current_run_dir / "trace.jsonl")
     readiness = [event for event in trace if event["event"] == "final_readiness_decision"]
-    assert [(event["decision"], event["reminder_already_sent"]) for event in readiness] == [
-        ("remind", False),
-        ("warn", True),
+    assert [(event["decision"], event["action"]) for event in readiness] == [
+        ("warn", "none")
     ]
+    assert "reminder_already_sent" not in readiness[0]
     report = json.loads(
         (agent.current_run_dir / "report.json").read_text(encoding="utf-8")
     )
-    assert report["evidence_summaries"]["final_readiness_summary"]["remind_count"] == 1
     assert report["evidence_summaries"]["final_readiness_summary"]["warn_count"] == 1
+    assert "remind_count" not in report["evidence_summaries"]["final_readiness_summary"]
     assert (
         report["evidence_summaries"]["final_readiness_summary"]["schema_version"]
         == "lite.final_readiness_summary.v1"
     )
 
 
-def test_strict_final_readiness_blocks_unverified_workspace_changes(tmp_path):
+def test_enforce_final_readiness_blocks_unverified_workspace_changes(tmp_path):
     agent = build_agent(
         tmp_path,
         [
             '<tool name="write_file" path="notes/result.txt"><content>ok\n</content></tool>',
             "<final>Done without verification.</final>",
         ],
-        final_readiness_mode="strict",
+        final_readiness_mode="enforce",
         max_steps=2,
     )
 
     events = list(agent.engine.run_turn("write the result"))
 
     stop_event = next(event for event in events if event["type"] == "stop")
-    assert "Files changed" in stop_event["content"]
+    assert "Verification did not succeed" in stop_event["content"]
     assert events[-1]["stop_reason"] == "final_gate_blocked"
 
     trace = read_jsonl(agent.current_run_dir / "trace.jsonl")
@@ -114,7 +111,7 @@ def test_strict_final_readiness_blocks_unverified_workspace_changes(tmp_path):
     assert report["evidence_summaries"]["final_readiness_summary"]["block_count"] == 1
 
 
-def test_strict_final_readiness_blocks_partial_success_workspace_changes(tmp_path):
+def test_enforce_final_readiness_blocks_partial_success_workspace_changes(tmp_path):
     command = shell_join(
         [
             sys.executable,
@@ -129,7 +126,7 @@ def test_strict_final_readiness_blocks_partial_success_workspace_changes(tmp_pat
             f'<tool>{{"name":"run_shell","args":{{"command":{json.dumps(command)},"timeout":20}}}}</tool>',
             "<final>Partial write is fine.</final>",
         ],
-        final_readiness_mode="strict",
+        final_readiness_mode="enforce",
         max_steps=2,
     )
 
@@ -150,7 +147,7 @@ def test_strict_final_readiness_blocks_partial_success_workspace_changes(tmp_pat
     ]
 
 
-def test_verify_readiness_reminds_then_blocks_when_compile_replaces_failed_tests(
+def test_enforce_readiness_accepts_fresh_structured_compile_receipt(
     tmp_path,
 ):
     compile_command = shell_join([sys.executable, "-m", "py_compile", "app.py"])
@@ -161,19 +158,16 @@ def test_verify_readiness_reminds_then_blocks_when_compile_replaces_failed_tests
             '<tool>{"name":"run_shell","args":{"command":"pytest missing_tests -q","timeout":20}}</tool>',
             f'<tool>{{"name":"run_shell","args":{{"command":{json.dumps(compile_command)},"timeout":20}}}}</tool>',
             "<final>Compile succeeded.</final>",
-            "<final>Compile succeeded.</final>",
         ],
-        final_readiness_mode="verify",
+        final_readiness_mode="enforce",
         max_steps=4,
     )
 
     events = list(agent.engine.run_turn("change code and verify it"))
 
-    notices = [event for event in events if event["type"] == "runtime_notice"]
-    assert len(notices) == 1
-    assert "repository test" in notices[0]["content"]
-    assert events[-2]["type"] == "stop"
-    assert events[-1]["stop_reason"] == "final_gate_blocked"
+    assert not [event for event in events if event["type"] == "runtime_notice"]
+    assert events[-2]["type"] == "final"
+    assert events[-2]["content"] == "Compile succeeded."
     report = json.loads(
         (agent.current_run_dir / "report.json").read_text(encoding="utf-8")
     )
@@ -181,9 +175,10 @@ def test_verify_readiness_reminds_then_blocks_when_compile_replaces_failed_tests
     assert signal["state"] == "passed"
     assert signal["command_class"] == "compile"
     assert signal["test_state"] == "failed"
+    assert signal["last_successful_verification_sequence"] > signal["last_mutation_sequence"]
 
 
-def test_soft_final_readiness_warns_for_net_negative_llm_compaction(tmp_path):
+def test_warn_final_readiness_records_net_negative_llm_compaction(tmp_path):
     agent = build_agent(
         tmp_path,
         [
@@ -195,11 +190,10 @@ Continue the large task.
 
 ## Next Steps
 - Finish the task.
-""",
-            "<final>Done after compact.</final>",
+            """,
             "<final>Done after compact.</final>",
         ],
-        final_readiness_mode="soft",
+        final_readiness_mode="warn",
         max_steps=2,
     )
     agent.model_client.context_window = 1000
@@ -214,8 +208,9 @@ Continue the large task.
 
     events = list(agent.engine.run_turn("finish"))
 
-    assert any(event["type"] == "runtime_notice" for event in events)
+    assert not any(event["type"] == "runtime_notice" for event in events)
+    assert events[-2]["type"] == "final"
     trace = read_jsonl(agent.current_run_dir / "trace.jsonl")
     readiness = [event for event in trace if event["event"] == "final_readiness_decision"]
-    assert any(event["decision"] == "remind" for event in readiness)
+    assert any(event["decision"] == "warn" for event in readiness)
     assert any("compact_net_negative" in event["reasons"] for event in readiness)

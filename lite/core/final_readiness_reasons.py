@@ -8,19 +8,10 @@ final_readiness.py.
 FINAL_READINESS_SUMMARY_SCHEMA = "lite.final_readiness_summary.v1"
 
 READINESS_REASONS = {
-    "changed_paths_without_verification": (
-        "hard",
-        "Files changed, but no successful verification was recorded.",
-    ),
-    "changed_code_without_test_verification": (
-        "hard",
-        "Code changed, but no successful repository test was recorded after the change.",
-    ),
     "verification_required": (
         "hard",
         "Verification did not succeed after the last workspace mutation.",
     ),
-    "failed_verification": ("hard", "The latest verification command failed."),
     "governance_denial": (
         "hard",
         "A runtime governance decision denied a requested tool action.",

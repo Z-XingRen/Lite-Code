@@ -40,10 +40,6 @@ def final_readiness_action(engine, task_state, proposed_final=""):
         return "allow", ""
     agent.emit_trace(task_state, "final_readiness_decision", decision)
     action = str(decision.get("action", "none"))
-    if action == "runtime_notice":
-        notice = readiness_notice(decision)
-        _record_runtime_notice(agent, task_state, notice)
-        return action, notice
     if action == "block":
         return action, readiness_notice(decision)
     return "allow", ""

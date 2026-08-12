@@ -10,10 +10,6 @@ from .final_readiness_context import replacement_ledger_disabled_under_pressure
 from .final_readiness_context import tier3_summary_without_delta
 
 UNRESOLVED_TODO_STATUS = {"pending", "in_progress"}
-CODE_SUFFIXES = frozenset(
-    ".c .cc .cpp .cs .go .java .js .jsx .kt .php .py .rb .rs .sh .swift "
-    ".ts .tsx".split()
-)
 
 
 def readiness_reasons(task_state, workspace_root=None):
@@ -25,11 +21,8 @@ def readiness_reasons(task_state, workspace_root=None):
         summaries["required_artifact_summary"] = required_artifacts
         task_state.evidence_summaries = summaries
         reasons.append("missing_required_artifact")
-    verification = dict(summaries.get("verification_signal", {}) or {})
-    if task_state.changed_paths and verification.get("state") != "passed":
-        reasons.append("changed_paths_without_verification")
-    if verification.get("state") == "failed":
-        reasons.append("failed_verification")
+    if task_state.changed_paths and not verification_is_fresh(task_state):
+        reasons.append("verification_required")
     if _has_partial_success_workspace_change(task_state):
         reasons.append("partial_success_workspace_changed")
     governance = dict(summaries.get("governance_summary", {}) or {})
@@ -55,16 +48,6 @@ def readiness_reasons(task_state, workspace_root=None):
     return reasons
 
 
-def changed_code_without_test_verification(task_state):
-    """Return whether changed source files lack a successful test command."""
-    if not any(_is_code_path(path) for path in task_state.changed_paths or []):
-        return False
-    verification = dict(
-        (task_state.evidence_summaries or {}).get("verification_signal", {}) or {}
-    )
-    return str(verification.get("test_state", "missing")) != "passed"
-
-
 def verification_is_fresh(task_state):
     """Return whether the last successful receipt follows the last mutation."""
 
@@ -79,11 +62,6 @@ def verification_is_fresh(task_state):
     except (TypeError, ValueError):
         return False
     return verification > mutation
-
-
-def _is_code_path(path):
-    value = str(path or "").replace("\\", "/").lower()
-    return any(value.endswith(suffix) for suffix in CODE_SUFFIXES)
 
 
 def _has_unresolved_high_priority_todo(task_state):

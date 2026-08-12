@@ -6,6 +6,7 @@ from lite.core.final_readiness import (
     extract_required_artifact_paths,
     readiness_notice,
 )
+from lite.core.final_readiness_tools import readiness_reasons
 from lite.core.task_state import TaskState
 
 
@@ -43,6 +44,49 @@ def test_enforce_mode_uses_one_canonical_verification_reason_and_sequence_freshn
     assert fresh["reasons"] == []
 
 
+def test_legacy_modes_normalize_without_creating_reminder_state():
+    expected = {
+        "soft": ("warn", "warn", "none"),
+        "strict": ("enforce", "block", "block"),
+        "verify": ("enforce", "block", "block"),
+    }
+    for legacy_mode, outcome in expected.items():
+        state = task_state()
+        state.changed_paths = ["src/app.py"]
+        state.evidence_summaries = {
+            "final_readiness_state": {
+                "reminded_reason_signatures": ["legacy-signature"]
+            },
+            "verification_signal": {
+                "state": "failed",
+                "last_mutation_sequence": 2,
+                "last_successful_verification_sequence": 1,
+            }
+        }
+
+        decision = evaluate_final_readiness(state, legacy_mode)
+
+        assert (decision["mode"], decision["decision"], decision["action"]) == outcome
+        assert decision["reasons"] == ["verification_required"]
+        assert "reason_signature" not in decision
+        assert "reminder_already_sent" not in decision
+        assert "final_readiness_state" not in state.evidence_summaries
+
+
+def test_readiness_reasons_emit_one_verification_fact():
+    state = task_state()
+    state.changed_paths = ["src/app.py"]
+    state.evidence_summaries = {
+        "verification_signal": {
+            "state": "failed",
+            "last_mutation_sequence": 4,
+            "last_successful_verification_sequence": 3,
+        }
+    }
+
+    assert readiness_reasons(state) == ["verification_required"]
+
+
 def test_final_readiness_detects_unresolved_current_run_high_priority_todo():
     state = task_state()
     state.todo_changes = [
@@ -56,7 +100,7 @@ def test_final_readiness_detects_unresolved_current_run_high_priority_todo():
         }
     ]
 
-    decision = evaluate_final_readiness(state, "strict")
+    decision = evaluate_final_readiness(state, "enforce")
 
     assert decision["decision"] == "warn"
     assert decision["action"] == "none"
@@ -76,7 +120,7 @@ def test_final_readiness_uses_latest_current_run_todo_state():
         },
     ]
 
-    decision = evaluate_final_readiness(state, "strict")
+    decision = evaluate_final_readiness(state, "enforce")
 
     assert decision["decision"] == "allow"
     assert decision["reasons"] == []
@@ -91,7 +135,7 @@ def test_final_readiness_detects_unreduced_context_pressure():
         }
     }
 
-    decision = evaluate_final_readiness(state, "strict")
+    decision = evaluate_final_readiness(state, "enforce")
 
     assert decision["decision"] == "warn"
     assert decision["action"] == "none"
@@ -107,7 +151,7 @@ def test_final_readiness_allows_context_pressure_after_successful_reduction():
         }
     }
 
-    decision = evaluate_final_readiness(state, "strict")
+    decision = evaluate_final_readiness(state, "enforce")
 
     assert decision["decision"] == "allow"
     assert decision["reasons"] == []
@@ -127,7 +171,7 @@ def test_final_readiness_reports_context_observability_gaps():
         }
     }
 
-    decision = evaluate_final_readiness(state, "strict")
+    decision = evaluate_final_readiness(state, "enforce")
 
     assert decision["decision"] == "warn"
     assert decision["reasons"] == [
@@ -147,7 +191,7 @@ def test_final_readiness_allows_missing_provider_usage_at_low_pressure():
         }
     }
 
-    decision = evaluate_final_readiness(state, "strict")
+    decision = evaluate_final_readiness(state, "enforce")
 
     assert decision["decision"] == "allow"
     assert decision["reasons"] == []
@@ -162,7 +206,7 @@ def test_final_readiness_warns_on_negative_llm_compact_net_benefit():
         }
     }
 
-    decision = evaluate_final_readiness(state, "strict")
+    decision = evaluate_final_readiness(state, "enforce")
 
     assert decision["decision"] == "warn"
     assert decision["reasons"] == ["compact_net_negative"]
@@ -178,7 +222,7 @@ def test_final_readiness_allows_non_negative_or_unknown_compact_net_benefit():
             }
         }
 
-        decision = evaluate_final_readiness(state, "strict")
+        decision = evaluate_final_readiness(state, "enforce")
 
         assert decision["decision"] == "allow"
         assert decision["reasons"] == []
@@ -194,7 +238,7 @@ def test_final_readiness_warns_on_low_quality_llm_compact_summary():
         }
     }
 
-    decision = evaluate_final_readiness(state, "strict")
+    decision = evaluate_final_readiness(state, "enforce")
 
     assert decision["decision"] == "warn"
     assert decision["reasons"] == ["compact_summary_quality_low"]
@@ -210,7 +254,7 @@ def test_final_readiness_ignores_deterministic_compact_summary_quality():
         }
     }
 
-    decision = evaluate_final_readiness(state, "strict")
+    decision = evaluate_final_readiness(state, "enforce")
 
     assert decision["decision"] == "allow"
     assert decision["reasons"] == []
@@ -228,7 +272,7 @@ def test_final_readiness_blocks_tier3_compaction_without_token_savings():
         }
     }
 
-    decision = evaluate_final_readiness(state, "strict")
+    decision = evaluate_final_readiness(state, "enforce")
 
     assert decision["decision"] == "block"
     assert decision["action"] == "block"
@@ -247,14 +291,14 @@ def test_final_readiness_blocks_partial_success_workspace_change():
         }
     ]
 
-    decision = evaluate_final_readiness(state, "strict")
+    decision = evaluate_final_readiness(state, "enforce")
 
     assert decision["decision"] == "block"
     assert decision["action"] == "block"
     assert decision["reasons"] == ["partial_success_workspace_changed"]
 
 
-def test_verify_readiness_requires_successful_tests_for_code_changes():
+def test_enforce_uses_fresh_receipt_sequence_instead_of_command_class():
     state = task_state()
     state.changed_paths = ["src/app.py"]
     state.evidence_summaries = {
@@ -262,20 +306,19 @@ def test_verify_readiness_requires_successful_tests_for_code_changes():
             "state": "passed",
             "command_class": "compile",
             "test_state": "failed",
+            "last_mutation_sequence": 3,
+            "last_successful_verification_sequence": 4,
         }
     }
 
-    first = evaluate_final_readiness(state, "verify")
-    second = evaluate_final_readiness(state, "verify")
+    decision = evaluate_final_readiness(state, "enforce")
 
-    assert first["decision"] == "remind"
-    assert first["action"] == "runtime_notice"
-    assert first["reasons"] == ["changed_code_without_test_verification"]
-    assert second["decision"] == "block"
-    assert second["action"] == "block"
+    assert decision["decision"] == "allow"
+    assert decision["action"] == "none"
+    assert decision["reasons"] == []
 
 
-def test_verify_readiness_allows_successful_tests_after_code_changes():
+def test_enforce_readiness_allows_fresh_test_receipt_after_code_changes():
     state = task_state()
     state.changed_paths = ["src/app.py"]
     state.evidence_summaries = {
@@ -283,10 +326,12 @@ def test_verify_readiness_allows_successful_tests_after_code_changes():
             "state": "passed",
             "command_class": "test",
             "test_state": "passed",
+            "last_mutation_sequence": 3,
+            "last_successful_verification_sequence": 4,
         }
     }
 
-    decision = evaluate_final_readiness(state, "verify")
+    decision = evaluate_final_readiness(state, "enforce")
 
     assert decision["decision"] == "allow"
     assert decision["reasons"] == []
@@ -357,10 +402,11 @@ def test_final_readiness_detects_missing_required_artifacts(tmp_path):
     state.user_request = "请生成 `final_report.md` 和 `progress.md`。"
     (tmp_path / "progress.md").write_text("done\n", encoding="utf-8")
 
-    decision = evaluate_final_readiness(state, "soft", workspace_root=tmp_path)
+    decision = evaluate_final_readiness(state, "warn", workspace_root=tmp_path)
 
-    assert decision["decision"] == "remind"
-    assert decision["action"] == "runtime_notice"
+    assert decision["mode"] == "warn"
+    assert decision["decision"] == "warn"
+    assert decision["action"] == "none"
     assert decision["reasons"] == ["missing_required_artifact"]
     summary = decision["required_artifact_summary"]
     assert summary["declared_paths"] == ["final_report.md", "progress.md"]
@@ -370,14 +416,14 @@ def test_final_readiness_detects_missing_required_artifacts(tmp_path):
 def test_readiness_notice_uses_catalog_messages_not_raw_codes():
     notice = readiness_notice(
         {
-            "action": "runtime_notice",
-            "reasons": ["changed_paths_without_verification"],
+            "action": "block",
+            "reasons": ["verification_required"],
         }
     )
 
-    assert "changed_paths_without_verification" not in notice
-    assert "Files changed" in notice
-    assert "successful verification" in notice
+    assert "verification_required" not in notice
+    assert "Verification did not succeed" in notice
+    assert "last workspace mutation" in notice
 
 
 def test_final_readiness_summary_has_schema_version():
@@ -386,3 +432,4 @@ def test_final_readiness_summary_has_schema_version():
     summary = reduce_final_readiness_summary({}, {"decision": "warn", "reasons": []})
 
     assert summary["schema_version"] == "lite.final_readiness_summary.v1"
+    assert "remind_count" not in summary
