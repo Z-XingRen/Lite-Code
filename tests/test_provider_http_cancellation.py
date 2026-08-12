@@ -1,4 +1,5 @@
 import threading
+import time
 from unittest.mock import patch
 
 import pytest
@@ -92,6 +93,17 @@ def run_in_thread(operation):
     return thread, outcome
 
 
+def wait_for_event_or_thread_exit(event, thread, timeout=5):
+    deadline = time.monotonic() + timeout
+    while thread.is_alive():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        if event.wait(min(remaining, 0.05)):
+            return True
+    return event.is_set()
+
+
 @pytest.mark.parametrize("client_type", CLIENT_TYPES)
 def test_stream_token_cancel_closes_blocking_response_without_retry(client_type):
     response = BlockingResponse()
@@ -113,7 +125,7 @@ def test_stream_token_cancel_closes_blocking_response_without_retry(client_type)
                 )
             )
         )
-        assert response.read_started.wait(1)
+        assert wait_for_event_or_thread_exit(response.read_started, thread)
         token.cancel()
         thread.join(1)
         stopped_after_cancel = not thread.is_alive()
@@ -150,7 +162,7 @@ def test_non_streaming_token_cancel_closes_blocking_response_without_retry(
                 cancellation_token=token,
             )
         )
-        assert response.read_started.wait(1)
+        assert wait_for_event_or_thread_exit(response.read_started, thread)
         token.cancel()
         thread.join(1)
         stopped_after_cancel = not thread.is_alive()
@@ -186,7 +198,7 @@ def test_client_abort_closes_active_response_without_retry(client_type, streamin
             return client.complete_result(ModelConversation("wait"), 20)
     with patch("urllib.request.urlopen", fake_urlopen):
         thread, outcome = run_in_thread(operation)
-        assert response.read_started.wait(1)
+        assert wait_for_event_or_thread_exit(response.read_started, thread)
         client.abort()
         thread.join(1)
         stopped_after_abort = not thread.is_alive()
@@ -219,7 +231,7 @@ def test_runtime_abort_interrupts_active_provider_http_read(tmp_path, client_typ
         thread, outcome = run_in_thread(
             lambda: list(agent.engine.run_turn("wait for the provider"))
         )
-        assert response.read_started.wait(1)
+        assert wait_for_event_or_thread_exit(response.read_started, thread)
         agent.abort_current_turn()
         thread.join(1)
         stopped_after_abort = not thread.is_alive()

@@ -1,6 +1,7 @@
 import json
 
 import pytest
+from scripts import run_runtime_evidence as runtime_evidence_script
 
 from lite.evaluation.runtime_evidence import (
     CRASH_PHASES,
@@ -139,3 +140,38 @@ def test_runtime_evidence_cli_writes_all_artifacts(tmp_path):
     assert (output / "effect-recovery.json").exists()
     assert (output / "journal-scaling.json").exists()
     assert (output / "summary.md").exists()
+
+
+def test_runtime_evidence_cli_does_not_treat_timing_as_correctness(monkeypatch):
+    workspace = {
+        "gates": {
+            "all_path_results_exact": True,
+            "headline_incremental_faster": False,
+            "passed": False,
+        }
+    }
+    recovery = {"gates": {"passed": True}}
+    journal = {"gates": {"all_states_correct": True, "passed": True}}
+
+    monkeypatch.setattr(
+        runtime_evidence_script,
+        "run_workspace_tracker_benchmark",
+        lambda **_kwargs: workspace,
+    )
+    monkeypatch.setattr(
+        runtime_evidence_script,
+        "run_effect_recovery_matrix",
+        lambda **_kwargs: recovery,
+    )
+    monkeypatch.setattr(
+        runtime_evidence_script,
+        "run_journal_scaling_benchmark",
+        lambda **_kwargs: journal,
+    )
+    monkeypatch.setattr(
+        runtime_evidence_script,
+        "write_runtime_evidence",
+        lambda *_args: {},
+    )
+
+    assert runtime_evidence_script.main([]) == 0

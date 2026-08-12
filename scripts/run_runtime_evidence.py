@@ -86,9 +86,12 @@ def main(argv=None):
     paths = write_runtime_evidence(args.output_dir, workspace, recovery, journal)
     for name, path in paths.items():
         print(f"{name}: {path}")
-    if not all(
-        result["gates"]["passed"] for result in (workspace, recovery, journal)
-    ):
+    correctness_gates = (
+        workspace["gates"]["all_path_results_exact"],
+        recovery["gates"]["passed"],
+        journal["gates"]["all_states_correct"],
+    )
+    if not all(correctness_gates):
         return 1
     return 0
 
