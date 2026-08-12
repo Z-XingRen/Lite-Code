@@ -56,10 +56,11 @@ def test_engine_streams_a_real_session_with_tool_artifacts(tmp_path):
     assert (tmp_path / "notes" / "result.txt").read_text(encoding="utf-8") == "ok\n"
 
     persisted_events = read_jsonl(agent.session_event_bus.path)
-    assert [event["event"] for event in persisted_events][-7:] == [
-        "tool_finished",
-        "context_orchestrator_decision",
-        "context_usage_recorded",
+    event_names = [event["event"] for event in persisted_events]
+    assert event_names.count("context_orchestrator_decision") == 1
+    assert event_names.count("context_usage_recorded") == 1
+    assert "tool_finished" in event_names
+    assert event_names[-4:] == [
         "model_requested",
         "model_parsed",
         "assistant_message",

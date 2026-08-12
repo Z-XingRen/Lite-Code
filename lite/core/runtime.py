@@ -75,7 +75,7 @@ DEFAULT_FEATURE_FLAGS = dict(
     durable_memory_retrieval=False,
     context_reduction=True,
     prompt_cache=True,
-    frozen_base_context=False,
+    frozen_base_context=True,
     journal_checkpoint_policy=True,
 )
 CHECKPOINT_SCHEMA_VERSION = "phase1-v1"

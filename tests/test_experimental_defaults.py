@@ -20,6 +20,7 @@ def test_negative_return_experiments_are_disabled_by_default(tmp_path):
 
     assert agent.feature_enabled("multi_agent") is False
     assert agent.feature_enabled("durable_memory_retrieval") is False
+    assert agent.feature_enabled("frozen_base_context") is True
     assert agent.auto_dream is False
     assert {"agent", "send_message", "task_stop"}.isdisjoint(agent.tools)
 

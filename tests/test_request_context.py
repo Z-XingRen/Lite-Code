@@ -47,7 +47,9 @@ def tool_result(call_id="call_1", name="read_file"):
     }
 
 
-def test_engine_rebuilds_each_request_from_current_context_and_tools(tmp_path):
+def test_engine_rebuilds_each_request_from_single_source_delta_and_current_tools(
+    tmp_path,
+):
     seen = []
 
     def transform(messages, cancellation_token):
@@ -80,8 +82,12 @@ def test_engine_rebuilds_each_request_from_current_context_and_tools(tmp_path):
     first, second = agent.model_client.requests
     assert first is not second
     assert "[tool:read_file]" not in first.initial_input
-    assert "[tool:read_file]" in second.initial_input
-    assert "current context" in second.initial_input
+    assert "[tool:read_file]" not in second.initial_input
+    assert sum(
+        message.get("role") == "tool"
+        and "current context" in str(message.get("content", ""))
+        for message in second.request_messages
+    ) == 1
     assert "write_file" in {tool.name for tool in first.tools}
     assert "write_file" not in {tool.name for tool in second.tools}
     assert len(seen) == 2
@@ -123,7 +129,7 @@ def test_context_transform_cancellation_stops_before_provider(tmp_path):
     )
 
 
-def test_later_request_uses_latest_compaction_boundary(tmp_path):
+def test_compaction_boundary_applies_at_the_next_turn(tmp_path):
     agent = build_agent(
         tmp_path,
         [
@@ -147,7 +153,11 @@ def test_later_request_uses_latest_compaction_boundary(tmp_path):
 
     first, second = agent.model_client.requests
     assert "Compacted session summary:" not in first.initial_input
-    assert "Compacted session summary:" in second.initial_input
+    assert "Compacted session summary:" not in second.initial_input
+
+    agent.model_client.outputs.append("Next turn.")
+    assert agent.ask("Continue after compacting") == "Next turn."
+    assert "Compacted session summary:" in agent.model_client.requests[-1].initial_input
 
 
 def test_hardening_merges_same_roles_stably_without_mutating_source():

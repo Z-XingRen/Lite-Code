@@ -1,3 +1,4 @@
+import json
 import os
 from unittest.mock import patch
 
@@ -173,25 +174,97 @@ def test_run_recovery_ablation_v2_writes_expected_artifact(tmp_path):
     assert artifact["variants"]["resume_enabled"]["summary"]["todo_continuity_rate"] >= 0.8
 
 
+def write_core_report_artifacts(artifact_dir, *, include_context_ab=False):
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    artifacts = {
+        "harness-regression-v2.json": {
+            "summary": {
+                "total_tasks": 12,
+                "pass_rate": 1.0,
+                "within_budget_rate": 1.0,
+                "verifier_pass_rate": 1.0,
+            },
+            "failure_category_counts": {},
+        },
+        "context-ablation-v2.json": {
+            "config_count": 12,
+            "summary": {
+                "avg_full_prompt_chars": 1000.0,
+                "avg_raw_prompt_chars": 2000.0,
+                "avg_prompt_compression_ratio": 0.5,
+                "max_prompt_compression_ratio": 0.6,
+                "current_request_preserved_rate": 1.0,
+            },
+        },
+        "memory-ablation-v2.json": {
+            "variants": {
+                "memory_on": {
+                    "repeated_reads": 0,
+                    "avg_tool_steps": 1.0,
+                    "correct_rate": 1.0,
+                    "memory_hit_rate": 1.0,
+                },
+                "memory_off": {"repeated_reads": 12},
+            }
+        },
+        "memory-fidelity-v1.json": {
+            "summary": {
+                "pass_rate": 1.0,
+                "irrelevant_injection_rate": 0.0,
+                "supersede_success_rate": 1.0,
+                "secret_exposure_rate": 0.0,
+                "stale_detection_rate": 1.0,
+                "stale_use_rate": 0.0,
+                "poison_quarantine_rate": 1.0,
+                "benign_recall_retention_rate": 1.0,
+            }
+        },
+        "recovery-ablation-v2.json": {
+            "variants": {
+                "resume_enabled": {
+                    "summary": {
+                        "resume_success_rate": 1.0,
+                        "stale_reanchor_rate": 1.0,
+                        "workspace_drift_detection_rate": 1.0,
+                        "resume_false_accept_rate": 0.0,
+                        "resumption_success_rate": 1.0,
+                        "first_action_correctness": 1.0,
+                        "todo_continuity_rate": 1.0,
+                    }
+                }
+            }
+        },
+    }
+    if include_context_ab:
+        artifacts["context-ab-v1.json"] = {
+            "summary": {
+                "estimated_proxy_only": {
+                    "paired_task_count": 4,
+                    "median_cost_delta_pct": -0.2,
+                    "claimable_cost_win": True,
+                    "quality_regression_count": 0,
+                }
+            }
+        }
+    paths = {}
+    for name, payload in artifacts.items():
+        path = artifact_dir / name
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        paths[name] = path
+    return paths
+
+
 def test_write_benchmark_core_report_marks_resume_safe_metrics(tmp_path):
-    run_context_ablation_v2(tmp_path / "artifacts" / "context-ablation-v2.json", repetitions=1)
-    run_memory_ablation_v2(tmp_path / "artifacts" / "memory-ablation-v2.json", repetitions=1)
-    run_memory_fidelity_v1(tmp_path / "artifacts" / "memory-fidelity-v1.json")
-    run_recovery_ablation_v2(tmp_path / "artifacts" / "recovery-ablation-v2.json", repetitions=1)
-    harness_artifact_path = tmp_path / "artifacts" / "harness-regression-v2.json"
-    harness_artifact_path.write_text(
-        '{"summary":{"total_tasks":12,"pass_rate":1.0,"within_budget_rate":1.0,"verifier_pass_rate":1.0},"failure_category_counts":{}}',
-        encoding="utf-8",
-    )
+    artifacts = write_core_report_artifacts(tmp_path / "artifacts")
 
     report_path = tmp_path / "docs" / "metrics" / "lite-benchmark-core-report.md"
     report_text = write_benchmark_core_report(
         report_path=report_path,
-        harness_artifact_path=harness_artifact_path,
-        context_artifact_path=tmp_path / "artifacts" / "context-ablation-v2.json",
-        memory_artifact_path=tmp_path / "artifacts" / "memory-ablation-v2.json",
-        recovery_artifact_path=tmp_path / "artifacts" / "recovery-ablation-v2.json",
-        fidelity_artifact_path=tmp_path / "artifacts" / "memory-fidelity-v1.json",
+        harness_artifact_path=artifacts["harness-regression-v2.json"],
+        context_artifact_path=artifacts["context-ablation-v2.json"],
+        memory_artifact_path=artifacts["memory-ablation-v2.json"],
+        recovery_artifact_path=artifacts["recovery-ablation-v2.json"],
+        fidelity_artifact_path=artifacts["memory-fidelity-v1.json"],
     )
 
     assert report_path.exists()
@@ -207,31 +280,18 @@ def test_write_benchmark_core_report_marks_resume_safe_metrics(tmp_path):
 
 
 def test_write_benchmark_core_report_includes_optional_context_ab(tmp_path):
-    from lite.evaluation.context_cost import run_deterministic_prompt_experiment, write_experiment_artifacts
-
-    run_context_ablation_v2(tmp_path / "artifacts" / "context-ablation-v2.json", repetitions=1)
-    run_memory_ablation_v2(tmp_path / "artifacts" / "memory-ablation-v2.json", repetitions=1)
-    run_memory_fidelity_v1(tmp_path / "artifacts" / "memory-fidelity-v1.json")
-    run_recovery_ablation_v2(tmp_path / "artifacts" / "recovery-ablation-v2.json", repetitions=1)
-    harness_artifact_path = tmp_path / "artifacts" / "harness-regression-v2.json"
-    harness_artifact_path.write_text(
-        '{"summary":{"total_tasks":12,"pass_rate":1.0,"within_budget_rate":1.0,"verifier_pass_rate":1.0},"failure_category_counts":{}}',
-        encoding="utf-8",
-    )
-    context_ab_dir = tmp_path / "artifacts" / "context-ab-v1"
-    write_experiment_artifacts(
-        run_deterministic_prompt_experiment(context_ab_dir, repetitions=1),
-        context_ab_dir,
+    artifacts = write_core_report_artifacts(
+        tmp_path / "artifacts", include_context_ab=True
     )
 
     report_text = write_benchmark_core_report(
         report_path=tmp_path / "docs" / "metrics" / "lite-benchmark-core-report.md",
-        harness_artifact_path=harness_artifact_path,
-        context_artifact_path=tmp_path / "artifacts" / "context-ablation-v2.json",
-        memory_artifact_path=tmp_path / "artifacts" / "memory-ablation-v2.json",
-        recovery_artifact_path=tmp_path / "artifacts" / "recovery-ablation-v2.json",
-        fidelity_artifact_path=tmp_path / "artifacts" / "memory-fidelity-v1.json",
-        context_ab_artifact_path=context_ab_dir / "results.json",
+        harness_artifact_path=artifacts["harness-regression-v2.json"],
+        context_artifact_path=artifacts["context-ablation-v2.json"],
+        memory_artifact_path=artifacts["memory-ablation-v2.json"],
+        recovery_artifact_path=artifacts["recovery-ablation-v2.json"],
+        fidelity_artifact_path=artifacts["memory-fidelity-v1.json"],
+        context_ab_artifact_path=artifacts["context-ab-v1.json"],
     )
 
     assert "Context A/B (Scripted)" in report_text
@@ -241,15 +301,7 @@ def test_write_benchmark_core_report_includes_optional_context_ab(tmp_path):
 def test_write_benchmark_core_report_falls_back_to_local_artifacts(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     local_artifacts = tmp_path / "_local" / "benchmark" / "artifacts"
-    local_artifacts.mkdir(parents=True)
-    run_context_ablation_v2(local_artifacts / "context-ablation-v2.json", repetitions=1)
-    run_memory_ablation_v2(local_artifacts / "memory-ablation-v2.json", repetitions=1)
-    run_memory_fidelity_v1(local_artifacts / "memory-fidelity-v1.json")
-    run_recovery_ablation_v2(local_artifacts / "recovery-ablation-v2.json", repetitions=1)
-    (local_artifacts / "harness-regression-v2.json").write_text(
-        '{"summary":{"total_tasks":12,"pass_rate":1.0,"within_budget_rate":1.0,"verifier_pass_rate":1.0},"failure_category_counts":{}}',
-        encoding="utf-8",
-    )
+    write_core_report_artifacts(local_artifacts)
 
     report_text = write_benchmark_core_report()
 

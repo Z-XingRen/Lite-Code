@@ -5,7 +5,7 @@ from lite.providers import ProviderError
 from lite.testing import ScriptedModelClient
 
 
-def build_agent(tmp_path, outputs):
+def build_agent(tmp_path, outputs, **kwargs):
     for name, marker in (("one.txt", "ONE_RESULT"), ("two.txt", "TWO_RESULT"), ("three.txt", "THREE_RESULT")):
         (tmp_path / name).write_text(marker + "\n", encoding="utf-8")
     return Lite(
@@ -14,7 +14,7 @@ def build_agent(tmp_path, outputs):
         session_store=SessionStore(tmp_path / ".lite" / "sessions"),
         approval_policy="auto",
         max_steps=4,
-        feature_flags={"frozen_base_context": True},
+        **kwargs,
     )
 
 
@@ -100,7 +100,6 @@ def test_single_source_survives_resume(tmp_path):
         session_store=first.session_store,
         session_id=first.session["id"],
         approval_policy="auto",
-        feature_flags={"frozen_base_context": True},
     )
 
     assert resumed.ask("Continue after resume") == "resumed"
@@ -137,3 +136,52 @@ def test_single_source_survives_final_only_recovery(tmp_path):
     assert agent.ask("Read one file and finish within the step budget") == "final-only"
     assert agent.model_client.requests[-1].tools == ()
     assert_single_source_requests(agent)
+
+
+def test_single_source_can_be_disabled_for_causal_comparison(tmp_path):
+    agent = Lite(
+        model_client=ScriptedModelClient(["<final>legacy</final>"]),
+        workspace=WorkspaceContext.build(tmp_path),
+        session_store=SessionStore(tmp_path / ".lite" / "sessions"),
+        approval_policy="auto",
+        feature_flags={"frozen_base_context": False},
+    )
+
+    assert agent.ask("Use the legacy context path.") == "legacy"
+    assert agent.model_client.requests[0].context_metadata["context_source"] == (
+        "session_transcript_plus_turn_delta"
+    )
+
+
+def test_default_single_source_assembles_less_input_than_legacy_path(tmp_path):
+    outputs = [
+        {"call_id": "c1", "name": "read_file", "args": {"path": "one.txt"}},
+        {"call_id": "c2", "name": "read_file", "args": {"path": "two.txt"}},
+        {"call_id": "c3", "name": "read_file", "args": {"path": "three.txt"}},
+        "<final>done</final>",
+    ]
+    default_root = tmp_path / "default"
+    legacy_root = tmp_path / "legacy"
+    default_root.mkdir()
+    legacy_root.mkdir()
+    default_agent = build_agent(default_root, outputs)
+    legacy_agent = build_agent(
+        legacy_root,
+        outputs,
+        feature_flags={"frozen_base_context": False},
+    )
+    for agent in (default_agent, legacy_agent):
+        agent.record({"role": "user", "content": "A prior completed request."})
+        assert agent.ask("Read the three files.") == "done"
+
+    default_chars = [
+        request.context_metadata["assembled_input_chars"]
+        for request in default_agent.model_client.requests
+    ]
+    legacy_chars = [
+        request.context_metadata["assembled_input_chars"]
+        for request in legacy_agent.model_client.requests
+    ]
+
+    assert all(default <= legacy for default, legacy in zip(default_chars, legacy_chars))
+    assert sum(default_chars) < sum(legacy_chars)
