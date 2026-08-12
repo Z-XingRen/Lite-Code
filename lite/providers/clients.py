@@ -275,6 +275,40 @@ def _openai_conversation_input(conversation):
     return items, image_input_count
 
 
+def _add_openai_prompt_cache_breakpoint(input_items, prefix_chars):
+    """Mark stable leading text without changing the model-visible prompt."""
+
+    remaining = max(0, int(prefix_chars or 0))
+    if not remaining:
+        return
+    for item in input_items:
+        if item.get("role") != "user" or not isinstance(item.get("content"), list):
+            continue
+        for index, block in enumerate(item["content"]):
+            if block.get("type") != "input_text":
+                continue
+            text = str(block.get("text", ""))
+            if remaining > len(text):
+                remaining -= len(text)
+                continue
+            stable = text[:remaining]
+            dynamic = text[remaining:]
+            if not stable:
+                return
+            replacement = [
+                {
+                    "type": "input_text",
+                    "text": stable,
+                    "prompt_cache_breakpoint": {"mode": "explicit"},
+                }
+            ]
+            if dynamic:
+                replacement.append({"type": "input_text", "text": dynamic})
+            item["content"][index : index + 1] = replacement
+            return
+        return
+
+
 def _openai_request_messages(messages):
     items = []
     image_input_count = 0
@@ -343,6 +377,40 @@ def _anthropic_conversation_messages(conversation):
         if user_content:
             messages.append({"role": "user", "content": user_content})
     return messages, image_input_count
+
+
+def _add_anthropic_prompt_cache_breakpoint(messages, prefix_chars):
+    """Mark stable leading text for Anthropic-compatible prompt caching."""
+
+    remaining = max(0, int(prefix_chars or 0))
+    if not remaining:
+        return
+    for message in messages:
+        if message.get("role") != "user" or not isinstance(message.get("content"), list):
+            continue
+        for index, block in enumerate(message["content"]):
+            if block.get("type") != "text":
+                continue
+            text = str(block.get("text", ""))
+            if remaining > len(text):
+                remaining -= len(text)
+                continue
+            stable = text[:remaining]
+            dynamic = text[remaining:]
+            if not stable:
+                return
+            replacement = [
+                {
+                    "type": "text",
+                    "text": stable,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ]
+            if dynamic:
+                replacement.append({"type": "text", "text": dynamic})
+            message["content"][index : index + 1] = replacement
+            return
+        return
 
 
 def _anthropic_request_messages(request_messages):
@@ -494,6 +562,7 @@ def _extract_usage_cache_details(data):
     input_details = usage.get("input_tokens_details") or usage.get("prompt_tokens_details") or {}
     cached_tokens = int(
         usage.get("cache_read_input_tokens")
+        or usage.get("prompt_cache_hit_tokens")
         or input_details.get("cached_tokens")
         or 0
     )
@@ -799,9 +868,10 @@ class OpenAICompatibleModelClient:
         self.timeout = timeout
         self.strict_tools = bool(strict_tools)
         self.reasoning_effort = str(reasoning_effort or "").strip().lower()
-        # 当前只在明确支持 prompt cache 语义的后端上启用这条链路，
-        # 避免对不支持的后端传一个“看起来统一、其实没意义”的伪参数。
-        self.supports_prompt_cache = any(host in self.base_url for host in ("openai.com", "right.codes"))
+        # Gateways can proxy cache-capable models under any host. Cache
+        # capability follows the configured protocol, not a URL allowlist.
+        self.supports_prompt_cache = True
+        self.supports_explicit_prompt_cache = "gpt-5.6" in self.model.lower()
         self.last_completion_metadata = {}
         self._http_responses = HttpResponseController()
 
@@ -817,11 +887,14 @@ class OpenAICompatibleModelClient:
         max_new_tokens,
         prompt_cache_key=None,
         prompt_cache_retention=None,
+        prompt_cache_prefix_chars=None,
         cancellation_token=None,
     ):
         self.last_completion_metadata = {}
         conversation = ensure_conversation(request)
         input_items, image_input_count = _openai_conversation_input(conversation)
+        if self.supports_explicit_prompt_cache:
+            _add_openai_prompt_cache_breakpoint(input_items, prompt_cache_prefix_chars)
         payload = {
             "model": self.model,
             "input": input_items,
@@ -838,7 +911,9 @@ class OpenAICompatibleModelClient:
         # 这样缓存复用针对的是稳定段，不会因为动态 history 每轮变化而失效。
         if self.supports_prompt_cache and prompt_cache_key:
             payload["prompt_cache_key"] = prompt_cache_key
-        if self.supports_prompt_cache and prompt_cache_retention:
+        if self.supports_explicit_prompt_cache and prompt_cache_prefix_chars:
+            payload["prompt_cache_options"] = {"mode": "explicit"}
+        elif prompt_cache_retention:
             payload["prompt_cache_retention"] = prompt_cache_retention
 
         headers = {
@@ -935,6 +1010,7 @@ class OpenAICompatibleModelClient:
         cancellation_token=None,
         prompt_cache_key=None,
         prompt_cache_retention=None,
+        prompt_cache_prefix_chars=None,
         **kwargs,
     ):
         """Stream OpenAI Responses SSE as provider-neutral model events."""
@@ -945,6 +1021,8 @@ class OpenAICompatibleModelClient:
         self.last_completion_metadata = {}
         conversation = ensure_conversation(request)
         input_items, image_input_count = _openai_conversation_input(conversation)
+        if self.supports_prompt_cache and self.supports_explicit_prompt_cache:
+            _add_openai_prompt_cache_breakpoint(input_items, prompt_cache_prefix_chars)
         payload = {
             "model": self.model,
             "input": input_items,
@@ -959,7 +1037,13 @@ class OpenAICompatibleModelClient:
             payload["reasoning"] = {"effort": self.reasoning_effort}
         if self.supports_prompt_cache and prompt_cache_key:
             payload["prompt_cache_key"] = prompt_cache_key
-        if self.supports_prompt_cache and prompt_cache_retention:
+        if (
+            self.supports_prompt_cache
+            and self.supports_explicit_prompt_cache
+            and prompt_cache_prefix_chars
+        ):
+            payload["prompt_cache_options"] = {"mode": "explicit"}
+        elif self.supports_prompt_cache and prompt_cache_retention:
             payload["prompt_cache_retention"] = prompt_cache_retention
 
         headers = {
@@ -1131,7 +1215,7 @@ class AnthropicCompatibleModelClient:
         self.timeout = timeout
         self.strict_tools = bool(strict_tools)
         self.reasoning_effort = str(reasoning_effort or "").strip().lower()
-        self.supports_prompt_cache = False
+        self.supports_prompt_cache = True
         self.last_completion_metadata = {}
         self._http_responses = HttpResponseController()
 
@@ -1147,14 +1231,14 @@ class AnthropicCompatibleModelClient:
         max_new_tokens,
         prompt_cache_key=None,
         prompt_cache_retention=None,
+        prompt_cache_prefix_chars=None,
         cancellation_token=None,
     ):
-        # 为了保持统一接口，runtime 仍然会传缓存参数进来；
-        # 这里只是显式丢弃，因为当前 Anthropic-compatible 路径没有接缓存复用。
         del prompt_cache_key, prompt_cache_retention
         self.last_completion_metadata = {}
         conversation = ensure_conversation(request)
         messages, image_input_count = _anthropic_conversation_messages(conversation)
+        _add_anthropic_prompt_cache_breakpoint(messages, prompt_cache_prefix_chars)
         payload = {
             "model": self.model,
             "messages": messages,
@@ -1253,6 +1337,7 @@ class AnthropicCompatibleModelClient:
         cancellation_token=None,
         prompt_cache_key=None,
         prompt_cache_retention=None,
+        prompt_cache_prefix_chars=None,
         **kwargs,
     ):
         """Stream Anthropic Messages SSE as provider-neutral model events."""
@@ -1263,6 +1348,7 @@ class AnthropicCompatibleModelClient:
         self.last_completion_metadata = {}
         conversation = ensure_conversation(request)
         messages, image_input_count = _anthropic_conversation_messages(conversation)
+        _add_anthropic_prompt_cache_breakpoint(messages, prompt_cache_prefix_chars)
         payload = {
             "model": self.model,
             "messages": messages,

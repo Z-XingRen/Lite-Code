@@ -181,8 +181,14 @@ def _usage_details(usage):
     details = {}
     if input_tokens is not None:
         details["input_tokens"] = input_tokens
-    if input_tokens is not None or "cache_read_input_tokens" in usage:
-        cached_tokens = int(usage.get("cache_read_input_tokens") or 0)
+    if input_tokens is not None or any(
+        key in usage for key in ("cache_read_input_tokens", "prompt_cache_hit_tokens")
+    ):
+        cached_tokens = int(
+            usage.get("cache_read_input_tokens")
+            or usage.get("prompt_cache_hit_tokens")
+            or 0
+        )
         details["cached_tokens"] = cached_tokens
         details["cache_hit"] = cached_tokens > 0
     if output_tokens is not None:

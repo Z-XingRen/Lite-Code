@@ -418,6 +418,55 @@ def test_openai_compatible_client_sends_prompt_cache_fields_and_records_usage():
     assert client.last_completion_metadata["provider_attempts"] == 1
 
 
+def test_openai_gateway_uses_cache_key_and_gpt_5_6_stable_prefix():
+    captured = {}
+
+    class FakeResponse:
+        headers = {"Content-Type": "application/json"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps({"output_text": "ok"}).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        del timeout
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        return FakeResponse()
+
+    client = OpenAICompatibleModelClient(
+        model="gpt-5.6-terra",
+        base_url="https://gateway.example/v1",
+        api_key="sk-test",
+        temperature=None,
+        timeout=30,
+    )
+
+    with patch("urllib.request.urlopen", fake_urlopen):
+        client.complete(
+            "stable prefix\n\ndynamic request",
+            42,
+            prompt_cache_key="prefix-hash-123",
+            prompt_cache_prefix_chars=len("stable prefix"),
+        )
+
+    assert client.supports_prompt_cache is True
+    assert captured["body"]["prompt_cache_key"] == "prefix-hash-123"
+    assert captured["body"]["prompt_cache_options"] == {"mode": "explicit"}
+    assert captured["body"]["input"][0]["content"] == [
+        {
+            "type": "input_text",
+            "text": "stable prefix",
+            "prompt_cache_breakpoint": {"mode": "explicit"},
+        },
+        {"type": "input_text", "text": "\n\ndynamic request"},
+    ]
+
+
 def test_openai_compatible_client_retries_rate_limit_and_records_retry_metadata():
     calls = {"count": 0}
 
@@ -707,6 +756,54 @@ def test_anthropic_compatible_client_extracts_first_text_block():
     assert result == "<final>ok</final>"
 
 
+def test_anthropic_gateway_marks_stable_prefix_for_prompt_cache():
+    captured = {}
+
+    class FakeResponse:
+        headers = {"Content-Type": "application/json"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {"content": [{"type": "text", "text": "ok"}]}
+            ).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        del timeout
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        return FakeResponse()
+
+    client = AnthropicCompatibleModelClient(
+        model="claude-sonnet-4-6",
+        base_url="https://gateway.example/anthropic",
+        api_key="sk-test",
+        temperature=None,
+        timeout=30,
+    )
+
+    with patch("urllib.request.urlopen", fake_urlopen):
+        client.complete(
+            "stable prefix\n\ndynamic request",
+            42,
+            prompt_cache_prefix_chars=len("stable prefix"),
+        )
+
+    assert client.supports_prompt_cache is True
+    assert captured["body"]["messages"][0]["content"] == [
+        {
+            "type": "text",
+            "text": "stable prefix",
+            "cache_control": {"type": "ephemeral"},
+        },
+        {"type": "text", "text": "\n\ndynamic request"},
+    ]
+
+
 def test_anthropic_compatible_client_records_usage_metadata():
     class FakeResponse:
         headers = {"Content-Type": "application/json"}
@@ -746,6 +843,44 @@ def test_anthropic_compatible_client_records_usage_metadata():
     assert client.last_completion_metadata["input_tokens"] == 1234
     assert client.last_completion_metadata["output_tokens"] == 56
     assert client.last_completion_metadata["cached_tokens"] == 100
+    assert client.last_completion_metadata["cache_hit"] is True
+
+
+def test_anthropic_compatible_client_records_deepseek_cache_hits():
+    class FakeResponse:
+        headers = {"Content-Type": "application/json"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {
+                    "content": [{"type": "text", "text": "ok"}],
+                    "usage": {
+                        "input_tokens": 1234,
+                        "output_tokens": 12,
+                        "prompt_cache_hit_tokens": 900,
+                        "prompt_cache_miss_tokens": 334,
+                    },
+                }
+            ).encode("utf-8")
+
+    client = AnthropicCompatibleModelClient(
+        model="deepseek-v4-pro",
+        base_url="https://api.deepseek.com/anthropic",
+        api_key="sk-test",
+        temperature=None,
+        timeout=30,
+    )
+
+    with patch("urllib.request.urlopen", return_value=FakeResponse()):
+        client.complete("hello", 42)
+
+    assert client.last_completion_metadata["cached_tokens"] == 900
     assert client.last_completion_metadata["cache_hit"] is True
 
 
@@ -1945,6 +2080,36 @@ def test_agent_records_model_cache_metadata_in_last_prompt_metadata(tmp_path):
     assert agent.last_prompt_metadata["cache_hit"] is True
     assert agent.last_prompt_metadata["prefix_hash"]
     assert agent.last_prompt_metadata["prompt_cache_key"] == agent.last_prompt_metadata["prefix_hash"]
+
+
+def test_agent_passes_stable_prefix_cache_metadata_to_any_capable_provider(tmp_path):
+    class CacheCapableScriptedModelClient(ScriptedModelClient):
+        def __init__(self, outputs):
+            super().__init__(outputs)
+            self.supports_prompt_cache = True
+            self.cache_kwargs = {}
+
+        def complete_result(self, request, max_new_tokens, **kwargs):
+            self.cache_kwargs = dict(kwargs)
+            return super().complete_result(request, max_new_tokens, **kwargs)
+
+    workspace = build_workspace(tmp_path)
+    store = SessionStore(tmp_path / ".lite" / "sessions")
+    client = CacheCapableScriptedModelClient(["<final>Done.</final>"])
+    agent = Lite(
+        model_client=client,
+        workspace=workspace,
+        session_store=store,
+        approval_policy="auto",
+    )
+
+    assert agent.ask("Cache this stable prefix") == "Done."
+
+    assert client.cache_kwargs["prompt_cache_key"] == agent.prefix_state.hash
+    assert client.cache_kwargs["prompt_cache_prefix_chars"] == (
+        agent.last_prompt_metadata["sections"]["prefix"]["rendered_chars"]
+    )
+    assert client.cache_kwargs["prompt_cache_retention"] is None
 
 
 def test_recent_transcript_entries_stay_richer_than_older_ones(tmp_path):

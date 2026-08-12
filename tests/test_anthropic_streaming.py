@@ -130,6 +130,65 @@ def test_anthropic_streams_text_and_usage_incrementally():
     assert response.closed
 
 
+def test_anthropic_stream_marks_stable_prefix_for_prompt_cache():
+    response = StreamingResponse(
+        [
+            ("message_start", {"type": "message_start", "message": {"usage": {"input_tokens": 4}}}),
+            ("message_stop", {"type": "message_stop"}),
+        ]
+    )
+    captured = {}
+
+    def fake_urlopen(request, timeout):
+        del timeout
+        captured["payload"] = json.loads(request.data.decode("utf-8"))
+        return response
+
+    with patch("urllib.request.urlopen", fake_urlopen):
+        list(
+            make_client().stream_result(
+                ModelConversation("stable\n\ndynamic"),
+                100,
+                prompt_cache_prefix_chars=len("stable"),
+            )
+        )
+
+    assert captured["payload"]["messages"][0]["content"] == [
+        {
+            "type": "text",
+            "text": "stable",
+            "cache_control": {"type": "ephemeral"},
+        },
+        {"type": "text", "text": "\n\ndynamic"},
+    ]
+
+
+def test_anthropic_stream_records_deepseek_cache_hits():
+    response = StreamingResponse(
+        [
+            (
+                "message_start",
+                {
+                    "type": "message_start",
+                    "message": {
+                        "usage": {
+                            "input_tokens": 1000,
+                            "prompt_cache_hit_tokens": 800,
+                        }
+                    },
+                },
+            ),
+            ("message_stop", {"type": "message_stop"}),
+        ]
+    )
+    client = make_client()
+    with patch("urllib.request.urlopen", return_value=response):
+        list(client.stream_result(ModelConversation("hello"), 100))
+
+    assert client.last_completion_metadata["cached_tokens"] == 800
+    assert client.last_completion_metadata["cache_hit"] is True
+
+
 def test_anthropic_streams_tool_use_and_replay_continuation():
     stream_events = [
         ("message_start", {"type": "message_start", "message": {"id": "msg_2", "usage": {"input_tokens": 1}}}),

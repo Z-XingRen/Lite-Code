@@ -112,6 +112,55 @@ def test_openai_streams_text_usage_incrementally_and_sets_payload():
     assert response.readline_calls < len(response._body.splitlines()) + 2
 
 
+def test_openai_gateway_stream_uses_cache_key_and_gpt_5_6_stable_prefix():
+    response = StreamingResponse(
+        [
+            (
+                "response.completed",
+                {
+                    "type": "response.completed",
+                    "response": {"status": "completed", "output": []},
+                },
+            )
+        ]
+    )
+    captured = {}
+
+    def fake_urlopen(request, timeout):
+        del timeout
+        captured["payload"] = json.loads(request.data.decode("utf-8"))
+        return response
+
+    client = OpenAICompatibleModelClient(
+        model="gpt-5.6-terra",
+        base_url="https://gateway.example/v1",
+        api_key="sk-test",
+        temperature=None,
+        timeout=30,
+    )
+    with patch("urllib.request.urlopen", fake_urlopen):
+        list(
+            client.stream_result(
+                ModelConversation("stable\n\ndynamic"),
+                100,
+                prompt_cache_key="prefix-hash-123",
+                prompt_cache_prefix_chars=len("stable"),
+            )
+        )
+
+    payload = captured["payload"]
+    assert payload["prompt_cache_key"] == "prefix-hash-123"
+    assert payload["prompt_cache_options"] == {"mode": "explicit"}
+    assert payload["input"][0]["content"] == [
+        {
+            "type": "input_text",
+            "text": "stable",
+            "prompt_cache_breakpoint": {"mode": "explicit"},
+        },
+        {"type": "input_text", "text": "\n\ndynamic"},
+    ]
+
+
 def test_openai_streams_function_call_deltas_and_replay_continuation():
     response = StreamingResponse(
         [

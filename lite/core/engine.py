@@ -293,9 +293,14 @@ class Engine:
 
             prompt_cache_key = None
             prompt_cache_retention = None
+            prompt_cache_prefix_chars = None
             if getattr(agent.model_client, "supports_prompt_cache", False):
                 prompt_cache_key = prompt_metadata.get("prompt_cache_key")
-                prompt_cache_retention = "in_memory"
+                prompt_cache_prefix_chars = (
+                    prompt_metadata.get("sections", {})
+                    .get("prefix", {})
+                    .get("rendered_chars")
+                )
 
             model_started_at = time.monotonic()
             try:
@@ -303,6 +308,7 @@ class Engine:
                     self, task_state, conversation, agent.max_new_tokens,
                     prompt_cache_key=prompt_cache_key,
                     prompt_cache_retention=prompt_cache_retention,
+                    prompt_cache_prefix_chars=prompt_cache_prefix_chars,
                 )
             except Exception as exc:
                 if agent.abort_requested:
