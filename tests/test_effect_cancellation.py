@@ -7,6 +7,7 @@ import time
 
 from lite import Lite, SessionStore, WorkspaceContext
 from lite.cancellation import CancellationRequested, CancellationToken
+from lite.features.sandbox import process as process_module
 from lite.features.sandbox.process import run_cancellable_process
 from lite.testing import ScriptedModelClient, shell_join
 
@@ -199,6 +200,122 @@ def test_cancellation_exposes_process_tree_termination_acknowledgement(tmp_path)
     assert isinstance(outcome.get("error"), CancellationRequested)
 
 
+def test_cancellation_during_process_start_waits_for_cleanup_ack(
+    tmp_path, monkeypatch
+):
+    command, parent_pid_path, child_pid_path, _, _ = process_tree_command(
+        tmp_path, late_delay=2.0
+    )
+    token = CancellationToken()
+    process_spawned = threading.Event()
+    release_popen = threading.Event()
+    real_popen = process_module.subprocess.Popen
+    popen_lock = threading.Lock()
+    popen_calls = 0
+    root_process = {}
+    outcome = {}
+
+    def blocking_popen(*args, **kwargs):
+        nonlocal popen_calls
+        process = real_popen(*args, **kwargs)
+        with popen_lock:
+            popen_calls += 1
+            block = popen_calls == 1
+        if block:
+            root_process["process"] = process
+            process_spawned.set()
+            if not release_popen.wait(timeout=5):
+                raise RuntimeError("process-start test gate timed out")
+        return process
+
+    monkeypatch.setattr(process_module.subprocess, "Popen", blocking_popen)
+
+    def run_command():
+        try:
+            run_cancellable_process(
+                command,
+                cwd=tmp_path,
+                env=os.environ.copy(),
+                timeout=20,
+                shell=True,
+                cancellation_token=token,
+            )
+        except BaseException as exc:
+            outcome["error"] = exc
+
+    thread = threading.Thread(target=run_command, name="test-process-start-race")
+    thread.start()
+    assert process_spawned.wait(timeout=5)
+
+    token.cancel()
+    acknowledged_before_registration_finished = token.wait_for_acknowledgements(
+        timeout=0.05
+    )
+    release_popen.set()
+    thread.join(timeout=5)
+
+    assert not acknowledged_before_registration_finished
+    assert token.wait_for_acknowledgements(timeout=5)
+    assert not thread.is_alive()
+    assert root_process["process"].poll() is not None
+    for pid_path in (parent_pid_path, child_pid_path):
+        if pid_path.exists():
+            assert not process_is_running(read_pid(pid_path))
+    assert isinstance(outcome.get("error"), CancellationRequested)
+
+
+def test_termination_ack_waits_for_platform_tree_exit(monkeypatch):
+    wait_entered = threading.Event()
+    release_tree = threading.Event()
+
+    class FakeProcess:
+        def __init__(self):
+            self.returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            del timeout
+            self.returncode = 1
+            return self.returncode
+
+        def kill(self):
+            self.returncode = 1
+
+    class FakePlatformTree:
+        def __init__(self, process):
+            self.process = process
+
+        def terminate(self):
+            self.process.returncode = 1
+
+        def wait_for_exit(self, timeout):
+            wait_entered.set()
+            return release_tree.wait(timeout)
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(process_module, "PlatformProcessTree", FakePlatformTree)
+    acknowledgement = process_module.CancellationAcknowledgement()
+    terminator = process_module._ProcessTreeTerminator(
+        FakeProcess(), acknowledgement
+    )
+    thread = threading.Thread(target=terminator.terminate)
+    thread.start()
+
+    entered = wait_entered.wait(timeout=1)
+    acknowledged_while_tree_running = acknowledgement.acknowledged
+    release_tree.set()
+    thread.join(timeout=2)
+
+    assert entered
+    assert not acknowledged_while_tree_running
+    assert acknowledgement.acknowledged
+    assert not thread.is_alive()
+
+
 def test_posix_cancellation_acknowledgement_covers_process_group(tmp_path):
     if os.name == "nt":
         return
@@ -229,10 +346,10 @@ def test_posix_cancellation_acknowledgement_covers_process_group(tmp_path):
     assert wait_for_path(started)
     token.cancel()
     assert token.wait_for_acknowledgements(timeout=5)
+    assert not process_is_running(read_pid(parent_pid_path))
+    assert not process_is_running(read_pid(child_pid_path))
     thread.join(timeout=5)
     assert not thread.is_alive()
-    assert wait_for_process_exit(read_pid(parent_pid_path))
-    assert wait_for_process_exit(read_pid(child_pid_path))
     assert isinstance(outcome.get("error"), CancellationRequested)
 
 
@@ -266,10 +383,10 @@ def test_windows_cancellation_acknowledgement_covers_job_tree(tmp_path):
     assert wait_for_path(started)
     token.cancel()
     assert token.wait_for_acknowledgements(timeout=5)
+    assert not process_is_running(read_pid(parent_pid_path))
+    assert not process_is_running(read_pid(child_pid_path))
     thread.join(timeout=5)
     assert not thread.is_alive()
-    assert wait_for_process_exit(read_pid(parent_pid_path))
-    assert wait_for_process_exit(read_pid(child_pid_path))
     assert isinstance(outcome.get("error"), CancellationRequested)
 
 

@@ -3,6 +3,7 @@
 import ctypes
 import os
 import subprocess
+import time
 from ctypes import wintypes
 from pathlib import Path
 
@@ -46,6 +47,19 @@ class _ExtendedLimitInformation(ctypes.Structure):
     ]
 
 
+class _BasicAccountingInformation(ctypes.Structure):
+    _fields_ = [
+        ("TotalUserTime", ctypes.c_longlong),
+        ("TotalKernelTime", ctypes.c_longlong),
+        ("ThisPeriodTotalUserTime", ctypes.c_longlong),
+        ("ThisPeriodTotalKernelTime", ctypes.c_longlong),
+        ("TotalPageFaultCount", wintypes.DWORD),
+        ("TotalProcesses", wintypes.DWORD),
+        ("ActiveProcesses", wintypes.DWORD),
+        ("TotalTerminatedProcesses", wintypes.DWORD),
+    ]
+
+
 class _WindowsJob:
     def __init__(self, process):
         self._handle = None
@@ -63,6 +77,14 @@ class _WindowsJob:
         kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
         kernel32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
         kernel32.TerminateJobObject.restype = wintypes.BOOL
+        kernel32.QueryInformationJobObject.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        kernel32.QueryInformationJobObject.restype = wintypes.BOOL
         kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
         kernel32.CloseHandle.restype = wintypes.BOOL
         handle = kernel32.CreateJobObjectW(None, None)
@@ -88,6 +110,28 @@ class _WindowsJob:
         if self._handle is not None:
             ctypes.windll.kernel32.TerminateJobObject(self._handle, 1)
 
+    def wait_for_exit(self, timeout):
+        if self._handle is None:
+            return None
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        while True:
+            info = _BasicAccountingInformation()
+            returned = wintypes.DWORD()
+            queried = ctypes.windll.kernel32.QueryInformationJobObject(
+                self._handle,
+                1,
+                ctypes.byref(info),
+                ctypes.sizeof(info),
+                ctypes.byref(returned),
+            )
+            if not queried:
+                return False
+            if info.ActiveProcesses == 0:
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.01)
+
     def close(self):
         handle, self._handle = self._handle, None
         if handle is not None:
@@ -98,13 +142,14 @@ class PlatformProcessTree:
     def __init__(self, process):
         self.process = process
         self._job = _WindowsJob(process)
+        self._taskkill_completed = False
 
     def terminate(self):
         self._job.terminate()
         system_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
         taskkill = system_root / "System32" / "taskkill.exe"
         try:
-            subprocess.run(
+            completed = subprocess.run(
                 [str(taskkill), "/PID", str(self.process.pid), "/T", "/F"],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -112,6 +157,7 @@ class PlatformProcessTree:
                 timeout=_TERMINATION_GRACE_SECONDS,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
+            self._taskkill_completed = completed.returncode == 0
         except (OSError, subprocess.SubprocessError):
             pass
         if self.process.poll() is None:
@@ -119,6 +165,12 @@ class PlatformProcessTree:
                 self.process.kill()
             except OSError:
                 pass
+
+    def wait_for_exit(self, timeout):
+        job_result = self._job.wait_for_exit(timeout)
+        if job_result is not None:
+            return job_result
+        return self._taskkill_completed and self.process.poll() is not None
 
     def close(self):
         self._job.close()

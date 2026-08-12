@@ -13,6 +13,7 @@ else:
 
 
 _TERMINATION_GRACE_SECONDS = 1.0
+_TERMINATION_WAIT_SECONDS = 4.0
 
 
 def run_cancellable_process(
@@ -46,22 +47,31 @@ def run_cancellable_process(
     else:
         kwargs["start_new_session"] = True
 
-    process = subprocess.Popen(command, **kwargs)
     termination_acknowledgement = CancellationAcknowledgement()
     remove_acknowledgement = (
         cancellation_token.register_acknowledgement(termination_acknowledgement)
         if cancellation_token is not None
         else lambda: None
     )
-    terminator = _ProcessTreeTerminator(process, termination_acknowledgement)
-    remove_callback = (
-        cancellation_token.add_callback(terminator.terminate)
-        if cancellation_token is not None
-        else lambda: None
-    )
+    process = None
+    terminator = None
+
+    def remove_callback():
+        return None
+
     try:
+        if cancellation_token is not None:
+            cancellation_token.raise_if_cancelled()
+        process = subprocess.Popen(command, **kwargs)
+        terminator = _ProcessTreeTerminator(process, termination_acknowledgement)
+        remove_callback = (
+            cancellation_token.add_callback(terminator.terminate)
+            if cancellation_token is not None
+            else lambda: None
+        )
         stdout, stderr = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired as exc:
+        assert terminator is not None
         terminator.terminate()
         stdout, stderr = _collect_after_termination(process)
         if cancellation_token is not None and cancellation_token.cancelled:
@@ -70,13 +80,17 @@ def run_cancellable_process(
         exc.stderr = stderr
         raise
     except BaseException:
-        terminator.terminate()
-        _collect_after_termination(process)
+        if terminator is not None and process is not None:
+            terminator.terminate()
+            _collect_after_termination(process)
+        else:
+            termination_acknowledgement.acknowledge()
         raise
     finally:
         remove_callback()
         remove_acknowledgement()
-        terminator.close()
+        if terminator is not None:
+            terminator.close()
 
     if cancellation_token is not None and cancellation_token.cancelled:
         raise CancellationRequested("shell command cancelled")
@@ -94,19 +108,33 @@ class _ProcessTreeTerminator:
         self.acknowledgement = acknowledgement
         self._lock = threading.Lock()
         self._terminated = False
+        self._finished = threading.Event()
+        self._error = None
         self._platform = PlatformProcessTree(process)
 
     def terminate(self):
         with self._lock:
             if self._terminated:
-                return
-            self._terminated = True
+                owner = False
+            else:
+                self._terminated = True
+                owner = True
+        if not owner:
+            self._wait_for_termination()
+            return
         try:
             self._platform.terminate()
             self._confirm_process_exit()
+            if not self._platform.wait_for_exit(_TERMINATION_GRACE_SECONDS):
+                raise RuntimeError("process tree cleanup timed out")
+            if self.process.poll() is None:
+                raise RuntimeError("process exited without a terminal status")
+            self.acknowledgement.acknowledge()
+        except BaseException as exc:
+            self._error = exc
+            raise
         finally:
-            if self.process.poll() is not None:
-                self.acknowledgement.acknowledge()
+            self._finished.set()
 
     def _confirm_process_exit(self):
         try:
@@ -119,7 +147,15 @@ class _ProcessTreeTerminator:
             self.process.wait(timeout=_TERMINATION_GRACE_SECONDS)
 
     def close(self):
+        if self._terminated:
+            self._wait_for_termination()
         self._platform.close()
+
+    def _wait_for_termination(self):
+        if not self._finished.wait(_TERMINATION_WAIT_SECONDS):
+            raise RuntimeError("process tree termination did not finish")
+        if self._error is not None:
+            raise RuntimeError("process tree termination failed") from self._error
 
 
 def _collect_after_termination(process):
