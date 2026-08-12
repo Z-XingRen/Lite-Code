@@ -3,7 +3,7 @@ import json
 import sys
 import tempfile
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from ..config import resolve_provider_config
@@ -1836,7 +1836,7 @@ def run_context_ablation_v2(artifact_path=DEFAULT_CONTEXT_ABLATION_V2_PATH, repe
     artifact = {
         "schema_version": METRICS_SCHEMA_VERSION,
         "artifact_type": "context-ablation-v2",
-        "captured_at": datetime.utcnow().isoformat() + "Z",
+        "captured_at": datetime.now(timezone.utc).isoformat(),
         "config_count": payload["config_count"],
         "configs": payload["configs"],
         "summary": payload["summary"],
@@ -1849,7 +1849,7 @@ def run_memory_ablation_v2(artifact_path=DEFAULT_MEMORY_ABLATION_V2_PATH, repeti
     artifact = {
         "schema_version": METRICS_SCHEMA_VERSION,
         "artifact_type": "memory-ablation-v2",
-        "captured_at": datetime.utcnow().isoformat() + "Z",
+        "captured_at": datetime.now(timezone.utc).isoformat(),
         "task_count": payload["task_count"],
         "runs_per_variant": payload["runs_per_variant"],
         "category_counts": payload["category_counts"],
@@ -1869,7 +1869,7 @@ def run_recovery_ablation_v2(artifact_path=DEFAULT_RECOVERY_ABLATION_V2_PATH, re
     artifact = {
         "schema_version": METRICS_SCHEMA_VERSION,
         "artifact_type": "recovery-ablation-v2",
-        "captured_at": datetime.utcnow().isoformat() + "Z",
+        "captured_at": datetime.now(timezone.utc).isoformat(),
         "task_count": len(RECOVERY_ABLATION_TASKS),
         "variants": {
             variant: {

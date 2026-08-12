@@ -10,6 +10,8 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
+from urllib.parse import urlparse
 
 from lite import Lite, SessionStore, WorkspaceContext
 from lite.config import (
@@ -20,7 +22,12 @@ from lite.config import (
 from lite.core.run_store import RunStore
 from lite.core.task_state import STOP_REASON_FINAL_ANSWER_RETURNED
 from lite.evaluation.context_cost import _usage_from_trace
-from lite.providers import OpenAICompatibleModelClient
+from lite.providers.runtime import model_client_from_config
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python 3.10 dependency
+    import tomli as tomllib
 
 ROOT = Path(__file__).resolve().parents[2]
 MANIFEST = ROOT / "benchmarks/formal_v1/manifest.json"
@@ -34,6 +41,13 @@ HARD_SAFETY_EVENTS = {
     "unsafe_command_executed",
     "worker_scope_violation",
 }
+
+
+def configured_temperature(config):
+    with (ROOT / ".lite.toml").open("rb") as handle:
+        payload = tomllib.load(handle)
+    profile = payload.get("providers", {}).get(config.name, {})
+    return profile.get("temperature") if isinstance(profile, dict) else None
 
 
 def digest_tree(path: Path):
@@ -76,11 +90,12 @@ def load_manifest():
 def provider_metadata():
     load_project_env(ROOT, override=True)
     config = resolve_provider_config(
-        "openai", start=ROOT, config_path=ROOT / ".lite.toml"
+        None, start=ROOT, config_path=ROOT / ".lite.toml"
     )
-    if config.protocol != "openai" or not config.api_key:
+    if config.protocol not in {"openai", "anthropic"} or not config.api_key:
         raise RuntimeError(
-            "formal benchmark requires an OpenAI-compatible provider with API key"
+            "formal benchmark requires a supported provider with API key resolved "
+            "from .lite.toml"
         )
     return config
 
@@ -102,14 +117,11 @@ def select_tasks(manifest, task_ids="", limit=0):
 
 
 def make_client(config):
-    return OpenAICompatibleModelClient(
-        model=config.model,
-        base_url=config.base_url,
-        api_key=config.api_key,
-        temperature=0.0,
+    temperature = configured_temperature(config)
+    return model_client_from_config(
+        config,
+        SimpleNamespace(temperature=temperature, openai_timeout=300),
         timeout=300,
-        strict_tools=config.strict_tools,
-        reasoning_effort=config.reasoning_effort,
     )
 
 
@@ -191,7 +203,7 @@ def usage_from_workspace(workspace):
     return total
 
 
-def run_trial(task, repeat, out_root, config):
+def run_trial(task, repeat, out_root, config, *, feature_flags=None):
     started = time.monotonic()
     workspace = fresh_workspace(task, out_root / "workspaces" / f"repeat_{repeat}")
     before = file_snapshot(workspace)
@@ -203,9 +215,9 @@ def run_trial(task, repeat, out_root, config):
         run_store=RunStore(workspace / ".lite" / "runs"),
         approval_policy="auto",
         max_steps=int(task["step_budget"]),
-        max_new_tokens=default_max_tokens_for_provider("openai"),
+        max_new_tokens=default_max_tokens_for_provider(config.name),
         allowed_tools=task["allowed_tools"],
-        feature_flags={"context_reduction": True},
+        feature_flags=feature_flags or {"context_reduction": True},
     )
     errors = []
     for turn_prompt in [task["prompt"]] + (
@@ -423,12 +435,14 @@ def run_live(manifest, out_dir, repetitions):
         "task_ids": [task["id"] for task in manifest["tasks"]],
         "repetitions": repetitions,
         "provider": {
+            "source": str(ROOT / ".lite.toml"),
             "name": config.name,
             "protocol": config.protocol,
             "model": config.model,
             "reasoning_effort": config.reasoning_effort,
             "strict_tools": config.strict_tools,
-            "base_url": config.base_url,
+            "temperature": configured_temperature(config),
+            "base_url_hostname": urlparse(config.base_url).hostname,
             "api_key_present": bool(config.api_key),
         },
     }
@@ -518,12 +532,14 @@ def run_live(manifest, out_dir, repetitions):
     payload = {
         "benchmark_id": manifest["benchmark_id"],
         "model": {
+            "source": str(ROOT / ".lite.toml"),
             "provider": config.name,
             "protocol": config.protocol,
             "model": config.model,
             "reasoning_effort": config.reasoning_effort,
             "strict_tools": config.strict_tools,
-            "base_url": config.base_url,
+            "temperature": configured_temperature(config),
+            "base_url_hostname": urlparse(config.base_url).hostname,
             "api_key_present": bool(config.api_key),
         },
         "repetitions": repetitions,

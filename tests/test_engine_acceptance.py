@@ -12,6 +12,7 @@ def build_agent(tmp_path, outputs, **kwargs):
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     workspace = WorkspaceContext.build(tmp_path)
     store = SessionStore(tmp_path / ".lite" / "sessions")
+    kwargs.setdefault("feature_flags", {"multi_agent": True})
     return Lite(
         model_client=ScriptedModelClient(outputs),
         workspace=workspace,
@@ -235,6 +236,7 @@ def test_verify_tool_runs_default_python_check_and_records_receipt(tmp_path):
     )
     signal = report["evidence_summaries"]["verification_signal"]
     assert signal["state"] == "passed"
+    assert signal["test_state"] == "passed"
     assert signal["verification_receipt"] == receipt
 
 

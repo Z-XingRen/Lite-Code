@@ -56,6 +56,7 @@ class SessionJournalWriter:
         self._operation_lock = threading.Lock()
         self._closed = False
         self._owner_token = f"{os.getpid()}:{threading.get_ident()}:{uuid.uuid4().hex}"
+        self.write_count = 0
 
     @classmethod
     def create(cls, path, session, *, sync=True):
@@ -209,6 +210,7 @@ class SessionJournalWriter:
                 self.state,
                 sync=self.sync,
             )
+            self.write_count += 1
             effect.complete(
                 "ok",
                 {
@@ -325,6 +327,7 @@ class SessionJournalWriter:
             journal.flush()
             if self.sync:
                 os.fsync(journal.fileno())
+            self.write_count += 1
 
     def _truncate_to(self, size):
         with self.path.open("r+b") as journal:

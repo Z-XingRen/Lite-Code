@@ -59,8 +59,12 @@ class TurnHistoryBuilder:
             return "Transcript:\n- empty"
         return "\n".join(["Transcript:", *self._render_turn_lines(history, line_limit=2000)])
 
-    def render_section(self, budget, pressure=None):
-        history = list(getattr(self.agent, "session", {}).get("history", []))
+    def render_section(self, budget, pressure=None, history=None):
+        history = list(
+            getattr(self.agent, "session", {}).get("history", [])
+            if history is None
+            else history
+        )
         raw = self.raw_text(history)
         if not history:
             return raw, {

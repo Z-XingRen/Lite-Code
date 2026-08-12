@@ -106,6 +106,7 @@ class Engine:
         }
 
         agent.memory.set_task_summary(user_message)
+        turn_base_history = list(agent.session.get("history", []))
         agent.record({"role": "user", "content": user_message, "created_at": now()})
         agent.session_event_bus.emit(
             "user_message",
@@ -119,6 +120,7 @@ class Engine:
                 "user_request": clip(user_message, 300),
             },
         )
+        agent.start_turn_context(user_message, turn_base_history)
 
         tool_steps = 0
         attempts = 0
@@ -168,6 +170,22 @@ class Engine:
                 )
                 return
             prompt_metadata["request_context"] = request_context
+            prompt_metadata.update(
+                {
+                    key: request_context[key]
+                    for key in (
+                        "base_context_hash",
+                        "session_projection_event_count",
+                        "current_turn_delta_count",
+                        "provider_turn_count",
+                        "duplicate_tool_result_count",
+                        "assembled_input_chars",
+                        "estimated_input_tokens",
+                        "context_source",
+                    )
+                    if key in request_context
+                }
+            )
             prompt_metadata["final_only"] = final_only
             if commit_proposed_replacements(agent.session, prompt_metadata):
                 agent.persist_session(replace_history=True)

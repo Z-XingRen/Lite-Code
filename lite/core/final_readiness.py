@@ -11,16 +11,35 @@ from .final_readiness_reasons import (
     reason_message,
     reason_severity,
 )
-from .final_readiness_tools import readiness_reasons
+from .final_readiness_tools import (
+    changed_code_without_test_verification,
+    readiness_reasons,
+    verification_is_fresh,
+)
 
-VALID_MODES = {"off", "warn", "soft", "strict"}
+VALID_MODES = {"off", "warn", "enforce"}
+LEGACY_MODE_ALIASES = {"soft", "strict", "verify"}
+VERIFY_HARD_REASONS = {
+    "changed_paths_without_verification",
+    "changed_code_without_test_verification",
+    "failed_verification",
+    "partial_success_workspace_changed",
+    "missing_required_artifact",
+}
 
 
 def evaluate_final_readiness(task_state, mode, workspace_root=None):
-    mode = str(mode or "warn")
-    if mode not in VALID_MODES:
+    requested_mode = str(mode or "warn")
+    legacy_mode = requested_mode in LEGACY_MODE_ALIASES
+    mode = requested_mode
+    if mode not in VALID_MODES and not legacy_mode:
         mode = "warn"
     reasons = readiness_reasons(task_state, workspace_root=workspace_root)
+    if mode == "verify" and changed_code_without_test_verification(task_state):
+        if "changed_code_without_test_verification" not in reasons:
+            reasons.append("changed_code_without_test_verification")
+    if not legacy_mode:
+        reasons = _canonical_reasons(task_state, reasons)
     signature = _reason_signature(reasons)
     state = _state(task_state)
     reminded = set(state.get("reminded_reason_signatures", []))
@@ -37,6 +56,18 @@ def evaluate_final_readiness(task_state, mode, workspace_root=None):
         decision, action = (
             ("block", "block") if any(reason_severity(reason) == "hard" for reason in reasons) else ("warn", "none")
         )
+    elif reasons and mode == "verify":
+        enforceable = any(reason in VERIFY_HARD_REASONS for reason in reasons)
+        if enforceable:
+            decision, action = (
+                ("block", "block") if already_sent else ("remind", "runtime_notice")
+            )
+            if not already_sent:
+                reminded.add(signature)
+        else:
+            decision = "warn"
+    elif reasons and mode == "enforce":
+        decision, action = "block", "block"
     state["reminded_reason_signatures"] = sorted(reminded)
     return {
         "mode": mode,
@@ -87,3 +118,22 @@ def _state(task_state):
     summaries["final_readiness_state"] = state
     task_state.evidence_summaries = summaries
     return state
+
+
+def _canonical_reasons(task_state, reasons):
+    verification_reasons = {
+        "changed_paths_without_verification",
+        "changed_code_without_test_verification",
+        "failed_verification",
+    }
+    if not task_state.changed_paths:
+        return [reason for reason in reasons if reason not in verification_reasons]
+    if verification_is_fresh(task_state):
+        return [reason for reason in reasons if reason not in verification_reasons]
+    result = [reason for reason in reasons if reason not in verification_reasons]
+    insert_at = next(
+        (index for index, reason in enumerate(reasons) if reason in verification_reasons),
+        len(result),
+    )
+    result.insert(min(insert_at, len(result)), "verification_required")
+    return list(dict.fromkeys(result))

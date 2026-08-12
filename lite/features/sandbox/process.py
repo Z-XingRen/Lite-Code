@@ -4,7 +4,7 @@ import os
 import subprocess
 import threading
 
-from ...cancellation import CancellationRequested
+from ...cancellation import CancellationAcknowledgement, CancellationRequested
 
 if os.name == "nt":
     from .process_windows import PlatformProcessTree
@@ -47,7 +47,13 @@ def run_cancellable_process(
         kwargs["start_new_session"] = True
 
     process = subprocess.Popen(command, **kwargs)
-    terminator = _ProcessTreeTerminator(process)
+    termination_acknowledgement = CancellationAcknowledgement()
+    remove_acknowledgement = (
+        cancellation_token.register_acknowledgement(termination_acknowledgement)
+        if cancellation_token is not None
+        else lambda: None
+    )
+    terminator = _ProcessTreeTerminator(process, termination_acknowledgement)
     remove_callback = (
         cancellation_token.add_callback(terminator.terminate)
         if cancellation_token is not None
@@ -69,6 +75,7 @@ def run_cancellable_process(
         raise
     finally:
         remove_callback()
+        remove_acknowledgement()
         terminator.close()
 
     if cancellation_token is not None and cancellation_token.cancelled:
@@ -82,8 +89,9 @@ def run_cancellable_process(
 
 
 class _ProcessTreeTerminator:
-    def __init__(self, process):
+    def __init__(self, process, acknowledgement):
         self.process = process
+        self.acknowledgement = acknowledgement
         self._lock = threading.Lock()
         self._terminated = False
         self._platform = PlatformProcessTree(process)
@@ -93,7 +101,22 @@ class _ProcessTreeTerminator:
             if self._terminated:
                 return
             self._terminated = True
-        self._platform.terminate()
+        try:
+            self._platform.terminate()
+            self._confirm_process_exit()
+        finally:
+            if self.process.poll() is not None:
+                self.acknowledgement.acknowledge()
+
+    def _confirm_process_exit(self):
+        try:
+            self.process.wait(timeout=_TERMINATION_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            try:
+                self.process.kill()
+            except OSError:
+                pass
+            self.process.wait(timeout=_TERMINATION_GRACE_SECONDS)
 
     def close(self):
         self._platform.close()

@@ -14,6 +14,7 @@ from ..providers.base import (
     normalize_stop_reason,
 )
 from ..providers.errors import ProviderError
+from ..providers.streaming import ModelStreamProtocolError
 from .turn_transitions import (
     CONTINUE_EMPTY_RESPONSE_RETRY,
     emit_continue_transition,
@@ -59,9 +60,19 @@ def execute_tool_payload(engine, task_state, user_message, payload):
 def start_tool_payload(agent, task_state, name, args, call_id):
     task_state.record_tool(name)
     tool_started_at = time.monotonic()
-    agent.session_event_bus.emit(
-        "tool_started", {"run_id": task_state.run_id, "tool_name": name, "args": args}
+    tool = getattr(agent, "tools", {}).get(name)
+    defer_projection = bool(
+        agent.feature_enabled("journal_checkpoint_policy")
+        and getattr(tool, "read_only", False)
     )
+    if not defer_projection:
+        agent.session_event_bus.emit(
+            "tool_started", {"run_id": task_state.run_id, "tool_name": name, "args": args}
+        )
+    starts = getattr(agent, "_tool_persistence_starts", None)
+    if starts is None:
+        starts = agent._tool_persistence_starts = {}
+    starts[str(call_id or name)] = agent.persistence_write_count()
     return tool_started_at, {
         "type": "tool_call",
         "run_id": task_state.run_id,
@@ -84,18 +95,22 @@ def commit_tool_payload(
 ):
     agent = engine.runtime
     tool_duration_ms = int((time.monotonic() - tool_started_at) * 1000)
-    agent.session_event_bus.emit(
-        "tool_finished",
-        {
-            "run_id": task_state.run_id,
-            "tool_name": name,
-            "status": tool_metadata.get("tool_status", ""),
-            "tool_error_code": tool_metadata.get("tool_error_code", ""),
-            "workspace_changed": bool(tool_metadata.get("workspace_changed", False)),
-            "affected_paths": list(tool_metadata.get("affected_paths", [])),
-            "duration_ms": tool_duration_ms,
-        },
-    )
+    if not (
+        agent.feature_enabled("journal_checkpoint_policy")
+        and tool_metadata.get("read_only")
+    ):
+        agent.session_event_bus.emit(
+            "tool_finished",
+            {
+                "run_id": task_state.run_id,
+                "tool_name": name,
+                "status": tool_metadata.get("tool_status", ""),
+                "tool_error_code": tool_metadata.get("tool_error_code", ""),
+                "workspace_changed": bool(tool_metadata.get("workspace_changed", False)),
+                "affected_paths": list(tool_metadata.get("affected_paths", [])),
+                "duration_ms": tool_duration_ms,
+            },
+        )
     history_item = build_tool_history_item(
         name, args, tool_result, call_id, tool_metadata, created_at=now()
     )
@@ -108,7 +123,36 @@ def commit_tool_payload(
             "run_id": getattr(agent, "current_run_id", ""),
             "content": notification,
         }
-    agent.run_store.write_task_state(task_state)
+    deferred_governance = agent.current_task_state.evidence_summaries.pop(
+        "deferred_governance_decisions", []
+    )
+    if deferred_governance:
+        agent.emit_trace(
+            task_state,
+            "governance_batch",
+            {"decisions": deferred_governance, "tool_name": name},
+            persist_state=False,
+        )
+    checkpoint = None
+    workspace_changed = bool(tool_metadata.get("workspace_changed"))
+    successful_change = tool_metadata.get("tool_status") == "ok"
+    if (
+        not agent.feature_enabled("journal_checkpoint_policy")
+        or (workspace_changed and successful_change)
+    ):
+        checkpoint = agent.create_checkpoint(
+            task_state, user_message, trigger="tool_executed"
+        )
+    persistence_start = getattr(agent, "_tool_persistence_starts", {}).pop(
+        str(call_id or name), agent.persistence_write_count()
+    )
+    trace_write_cost = 1 if (
+        agent.feature_enabled("journal_checkpoint_policy")
+        and tool_metadata.get("read_only")
+    ) else 2
+    tool_metadata["persistence_write_count"] = max(
+        0, agent.persistence_write_count() - persistence_start + trace_write_cost
+    )
     agent.emit_trace(
         task_state,
         "tool_executed",
@@ -119,16 +163,17 @@ def commit_tool_payload(
             "duration_ms": tool_duration_ms,
             **tool_metadata,
         },
+        persist_state=not (
+            agent.feature_enabled("journal_checkpoint_policy")
+            and tool_metadata.get("read_only")
+        ),
     )
-    checkpoint = agent.create_checkpoint(
-        task_state, user_message, trigger="tool_executed"
-    )
-    agent.run_store.write_task_state(task_state)
-    agent.emit_trace(
-        task_state,
-        "checkpoint_created",
-        {"checkpoint_id": checkpoint["checkpoint_id"], "trigger": "tool_executed"},
-    )
+    if checkpoint is not None:
+        agent.emit_trace(
+            task_state,
+            "checkpoint_created",
+            {"checkpoint_id": checkpoint["checkpoint_id"], "trigger": "tool_executed"},
+        )
     yield {
         "type": "tool_result",
         "run_id": task_state.run_id,
@@ -320,6 +365,9 @@ def emit_empty_result_retry(engine, task_state):
 
 
 def should_retry_model_error(exc, provider_retries):
+    if isinstance(exc, ModelStreamProtocolError):
+        code = type(exc).__name__
+        return provider_retries.get(code, 0) < 1
     if not isinstance(exc, ProviderError):
         return False
     code = str(getattr(exc, "code", "") or "")

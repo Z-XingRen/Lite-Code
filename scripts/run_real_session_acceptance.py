@@ -164,6 +164,7 @@ def _scenario_plan_todo_explore(output_dir, workspace):
             "<final>Gate8 plan ready.</final>",
         ],
         max_steps=6,
+        feature_flags={"multi_agent": True},
     )
     agent.enter_plan_mode("gate8")
     answer = agent.ask("Plan Gate8 with todo and Explore evidence")
@@ -232,6 +233,7 @@ def _scenario_worker_write_scope(output_dir, workspace):
             "<final>Scoped worker completed.</final>",
         ],
         max_steps=6,
+        feature_flags={"multi_agent": True},
     )
     answer = agent.ask("Use a scoped worker twice")
     return _finalize(
@@ -310,6 +312,7 @@ def _scenario_security_rejection(output_dir, workspace):
             "<final>Path escape blocked.</final>",
         ],
         max_steps=5,
+        feature_flags={"multi_agent": True},
     )
     try:
         answer = agent.ask("Try unsafe workspace and secret operations")
@@ -463,7 +466,7 @@ def _scenario_live_provider_smoke(output_dir, workspace, include_live=None):
     )
 
 
-def _build_agent(workspace, outputs, max_steps=6):
+def _build_agent(workspace, outputs, max_steps=6, feature_flags=None):
     workspace_context = _scenario_workspace(workspace)
     return Lite(
         model_client=ScriptedModelClient(outputs),
@@ -471,6 +474,7 @@ def _build_agent(workspace, outputs, max_steps=6):
         session_store=SessionStore(workspace / ".lite" / "sessions"),
         approval_policy="auto",
         max_steps=max_steps,
+        feature_flags=feature_flags,
     )
 
 

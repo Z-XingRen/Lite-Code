@@ -1429,21 +1429,23 @@ def summarize_read_result(result, limit=180):
     return clip(summary, limit)
 
 
-def _iter_retrieval_notes(state, workspace_root=None):
+def _iter_retrieval_notes(state, workspace_root=None, include_durable=True):
     for note in state["episodic_notes"]:
         yield dict(note)
-    if workspace_root is not None:
+    if include_durable and workspace_root is not None:
         durable_store = DurableMemoryStore(Path(workspace_root) / ".lite" / "memory")
         for topic in durable_store.load_index():
             for note in durable_store.load_topic_notes(topic["topic"]):
                 yield _apply_evidence_staleness(dict(note), workspace_root)
 
 
-def _ranked_retrieval_notes(state, query, workspace_root=None):
+def _ranked_retrieval_notes(state, query, workspace_root=None, include_durable=True):
     state = normalize_memory_state(state, workspace_root)
     query_tokens = _tokenize(query)
     ranked = []
-    for note in _iter_retrieval_notes(state, workspace_root):
+    for note in _iter_retrieval_notes(
+        state, workspace_root, include_durable=include_durable
+    ):
         # 召回逻辑故意保持简单透明：先看 tag 精确命中，
         # 再看关键词重叠，最后看新旧程度。这里不引入 embedding。
         note_tags = {tag.lower() for tag in note.get("tags", [])}
@@ -1461,10 +1463,17 @@ def _ranked_retrieval_notes(state, query, workspace_root=None):
     return ranked
 
 
-def retrieval_view_structured(state, query, limit=3, workspace_root=None):
+def retrieval_view_structured(
+    state, query, limit=3, workspace_root=None, include_durable=True
+):
     selected = []
     rejected = []
-    for _, score, note in _ranked_retrieval_notes(state, query, workspace_root):
+    for _, score, note in _ranked_retrieval_notes(
+        state,
+        query,
+        workspace_root,
+        include_durable=include_durable,
+    ):
         reject_reason = _retrieval_reject_reason(note, workspace_root)
         if reject_reason:
             rejected.append(_retrieval_record(note, score, reject_reason=reject_reason))
@@ -1476,13 +1485,27 @@ def retrieval_view_structured(state, query, limit=3, workspace_root=None):
     return {"selected": selected, "rejected": rejected, "query_hash": _query_hash(query)}
 
 
-def retrieval_candidates(state, query, limit=3, workspace_root=None):
-    structured = retrieval_view_structured(state, query, limit=limit, workspace_root=workspace_root)
+def retrieval_candidates(
+    state, query, limit=3, workspace_root=None, include_durable=True
+):
+    structured = retrieval_view_structured(
+        state,
+        query,
+        limit=limit,
+        workspace_root=workspace_root,
+        include_durable=include_durable,
+    )
     return structured["selected"]
 
 
-def retrieval_view(state, query, limit=3, workspace_root=None):
-    structured = retrieval_view_structured(state, query, limit=limit, workspace_root=workspace_root)
+def retrieval_view(state, query, limit=3, workspace_root=None, include_durable=True):
+    structured = retrieval_view_structured(
+        state,
+        query,
+        limit=limit,
+        workspace_root=workspace_root,
+        include_durable=include_durable,
+    )
     candidates = structured["selected"]
     lines = ["Relevant memory:"]
     if not candidates:
@@ -1577,16 +1600,34 @@ class LayeredMemory:
         self.state, invalidated = invalidate_stale_file_summaries(self.state, self.workspace_root)
         return invalidated
 
-    def retrieval_candidates(self, query, limit=3):
-        self.last_retrieval = retrieval_view_structured(self.state, query, limit=limit, workspace_root=self.workspace_root)
+    def retrieval_candidates(self, query, limit=3, include_durable=True):
+        self.last_retrieval = retrieval_view_structured(
+            self.state,
+            query,
+            limit=limit,
+            workspace_root=self.workspace_root,
+            include_durable=include_durable,
+        )
         return self.last_retrieval["selected"]
 
-    def retrieval_view_structured(self, query, limit=3):
-        self.last_retrieval = retrieval_view_structured(self.state, query, limit=limit, workspace_root=self.workspace_root)
+    def retrieval_view_structured(self, query, limit=3, include_durable=True):
+        self.last_retrieval = retrieval_view_structured(
+            self.state,
+            query,
+            limit=limit,
+            workspace_root=self.workspace_root,
+            include_durable=include_durable,
+        )
         return self.last_retrieval
 
-    def retrieval_view(self, query, limit=3):
-        return retrieval_view(self.state, query, limit=limit, workspace_root=self.workspace_root)
+    def retrieval_view(self, query, limit=3, include_durable=True):
+        return retrieval_view(
+            self.state,
+            query,
+            limit=limit,
+            workspace_root=self.workspace_root,
+            include_durable=include_durable,
+        )
 
     def render_memory_text(self):
         return render_memory_text(self.state, self.workspace_root)

@@ -24,10 +24,14 @@ def record_governance_decision(
     task_state = getattr(agent, "current_task_state", None)
     if task_state is None:
         return None
-    return agent.emit_trace(
-        task_state,
-        "governance_decision",
-        {
+    tool = getattr(agent, "tools", {}).get(str(tool_name))
+    defer_projection = bool(
+        getattr(agent, "feature_enabled", lambda _name: False)(
+            "journal_checkpoint_policy"
+        )
+        and getattr(tool, "read_only", False)
+    )
+    payload = {
             "decision": str(decision),
             "decision_type": str(decision_type),
             "reason_code": str(reason_code),
@@ -39,8 +43,19 @@ def record_governance_decision(
             "read_only": bool(getattr(agent, "read_only", False)),
             "args": args or {},
             "source": source,
-        },
-    )
+    }
+    if defer_projection:
+        deferred = task_state.evidence_summaries.setdefault(
+            "deferred_governance_decisions", []
+        )
+        deferred.append(
+            {
+                key: payload[key]
+                for key in ("decision", "decision_type", "reason_code", "security_event_type")
+            }
+        )
+        return payload
+    return agent.emit_trace(task_state, "governance_decision", payload)
 
 
 def reduce_governance_summary(summary, event):

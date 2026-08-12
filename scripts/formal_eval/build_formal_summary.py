@@ -9,12 +9,37 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python 3.10 dependency
+    import tomli as tomllib
 
 
 ROOT = Path(__file__).resolve().parents[2]
 ARTIFACTS = ROOT / "artifacts" / "formal-evaluation-20260806"
 OUTPUT_JSON = ARTIFACTS / "formal-summary.json"
 OUTPUT_MD = ARTIFACTS / "formal-summary.md"
+
+
+def project_model_identity() -> dict[str, Any]:
+    with (ROOT / ".lite.toml").open("rb") as handle:
+        payload = tomllib.load(handle)
+    provider = str(payload.get("provider") or "")
+    profile = payload.get("providers", {}).get(provider, {})
+    if not isinstance(profile, dict):
+        profile = {}
+    return {
+        "provider": provider,
+        "protocol": profile.get("protocol"),
+        "model": profile.get("model"),
+        "reasoning_effort": profile.get("reasoning_effort"),
+        "strict_tools": profile.get("strict_tools"),
+        "temperature": profile.get("temperature"),
+        "base_url_hostname": urlparse(str(profile.get("base_url") or "")).hostname,
+        "credential_source": "project .lite.toml (API key presence only)",
+    }
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -569,12 +594,7 @@ def build_summary() -> dict[str, Any]:
     return {
         "schema_version": "lite-formal-evaluation-v1",
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "model_policy": {
-            "provider_profile": "openai",
-            "model": "gpt-5.5",
-            "reasoning_effort": "medium",
-            "credential_source": "project .env (value omitted)",
-        },
+        "model_policy": project_model_identity(),
         "grader_qualification": qualification["qualification"],
         "coding_quality": summarize_quality(),
         "agentdojo_style_security": security["summary"],
@@ -597,7 +617,7 @@ def build_summary() -> dict[str, Any]:
             },
         },
         "limitations": [
-            "LongMemEval uses a fixed oracle subset and a same-model gpt-5.5 judge; it is not an official leaderboard score.",
+            "LongMemEval uses a fixed oracle subset and a same-model judge from .lite.toml; it is not an official leaderboard score.",
             "AgentDojo-style is a local paired safety set, not the upstream AgentDojo benchmark leaderboard.",
             "Terminal-Bench and SWE-bench results are fixed deterministic subsets, not full-dataset leaderboard scores.",
             "External benchmark expansion was intentionally stopped on 2026-08-07 after the evaluation scope was refocused on controllability, traceability, token A/B gates, and recovery evidence; Terminal-Bench Lite is partial and SWE-bench was not started.",

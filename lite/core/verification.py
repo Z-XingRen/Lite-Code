@@ -34,11 +34,17 @@ def reduce_verification_signal(previous, event, changed_paths):
     if event.get("event") != "tool_executed":
         return signal
     if event.get("workspace_changed"):
+        previous_mutation = int(signal.get("last_mutation_sequence", 0) or 0)
         signal = {
             "schema_version": VERIFICATION_SIGNAL_SCHEMA,
             "state": "missing",
             "last_workspace_change_span_id": str(event.get("span_id", "")),
             "changed_paths": list(changed_paths or []),
+            "test_state": "missing",
+            "last_mutation_sequence": _event_sequence(
+                event, previous_mutation + 1
+            ),
+            "last_successful_verification_sequence": 0,
         }
     receipt = dict(event.get("verification_receipt", {}) or {})
     command = str(
@@ -78,6 +84,11 @@ def reduce_verification_signal(previous, event, changed_paths):
             "changed_paths": list(changed_paths or []),
         }
     )
+    if passed:
+        signal["last_successful_verification_sequence"] = _event_sequence(
+            event,
+            int(signal.get("last_mutation_sequence", 0) or 0) + 1,
+        )
     if receipt:
         signal.update(
             {
@@ -88,7 +99,33 @@ def reduce_verification_signal(previous, event, changed_paths):
                 ),
             }
         )
+    if command_class == "test":
+        signal.update(
+            {
+                "test_state": "passed" if passed else "failed",
+                "test_command": command,
+                "test_span_id": str(event.get("span_id", "")),
+                "test_after_last_workspace_change": bool(
+                    signal.get("last_workspace_change_span_id") or changed_paths
+                ),
+            }
+        )
     return signal
+
+
+def _event_sequence(event, fallback):
+    for value in (
+        event.get("mutation_sequence"),
+        event.get("verification_sequence"),
+        str(event.get("span_id", "")).rsplit("_", 1)[-1],
+    ):
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            continue
+        if parsed > 0:
+            return parsed
+    return int(fallback)
 
 
 def _path_is_covered(path, covered_paths):
@@ -197,8 +234,11 @@ def classify_verification_command(command):
         return {
             "compileall": "compile",
             "mypy": "typecheck",
+            "py_compile": "compile",
             "pytest": "test",
         }.get(module, "")
+    if len(tokens) > 2 and _is_python_command(python_cmd) and tokens[1] == "-c":
+        return "synthetic" if "assert" in " ".join(tokens[2:]) else ""
     if tokens[0] in {"pytest", "tox"}:
         return "test"
     if tokens[0] == "ruff" and len(tokens) > 1 and tokens[1] == "check":
@@ -207,12 +247,7 @@ def classify_verification_command(command):
         return "typecheck"
     if tokens[0] in {"npm", "pnpm"}:
         return _js_command_class(tokens)
-    if tokens[:2] in (
-        ["yarn", "test"],
-        ["go", "test"],
-        ["cargo", "test"],
-        ["make", "test"],
-    ):
+    if tokens[:2] in (["yarn", "test"], ["go", "test"], ["cargo", "test"], ["make", "test"]):
         return "test"
     return ""
 

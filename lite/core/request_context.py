@@ -1,6 +1,7 @@
 """Per-request context transformation and provider-boundary hardening."""
 
 import copy
+import json
 import time
 
 from ..cancellation import CancellationRequested
@@ -81,8 +82,52 @@ def rebuild_model_request(agent, prompt, previous=None, *, tools=None):
     hardened, report = harden_context_messages(messages)
     report["transform_applied"] = callable(transform)
     conversation.request_messages = tuple(hardened)
+    report.update(_request_telemetry(agent, conversation, hardened))
     conversation.context_metadata = report
     return conversation, report
+
+
+def _request_telemetry(agent, conversation, messages):
+    source = (
+        "session_projection_plus_turn_delta"
+        if getattr(agent, "_frozen_turn_context", None) is not None
+        else "session_transcript_plus_turn_delta"
+    )
+    serialized = json.dumps(messages, ensure_ascii=False, sort_keys=True)
+    return {
+        "base_context_hash": str(
+            getattr(agent, "_frozen_turn_context", {})
+            and agent._frozen_turn_context.get("base_context_hash", "")
+            or ""
+        ),
+        "session_projection_event_count": int(
+            getattr(agent, "_turn_context_projection_event_count", 0) or 0
+        ),
+        "current_turn_delta_count": len(conversation.turns),
+        "provider_turn_count": len(conversation.turns),
+        "duplicate_tool_result_count": _duplicate_tool_result_count(
+            conversation.initial_input, messages
+        ),
+        "assembled_input_chars": len(serialized),
+        "estimated_input_tokens": max(1, len(serialized) // 4),
+        "context_source": source,
+    }
+
+
+def _duplicate_tool_result_count(initial_input, messages):
+    duplicates = 0
+    seen_calls = set()
+    for message in messages:
+        if message.get("role") != "tool":
+            continue
+        call_key = (str(message.get("call_id", "")), str(message.get("name", "")))
+        if call_key in seen_calls:
+            duplicates += 1
+        seen_calls.add(call_key)
+        content = str(message.get("content", ""))
+        if len(content) >= 16:
+            duplicates += max(0, str(initial_input).count(content) - 1)
+    return duplicates
 
 
 def conversation_messages(conversation):

@@ -150,6 +150,39 @@ def test_strict_final_readiness_blocks_partial_success_workspace_changes(tmp_pat
     ]
 
 
+def test_verify_readiness_reminds_then_blocks_when_compile_replaces_failed_tests(
+    tmp_path,
+):
+    compile_command = shell_join([sys.executable, "-m", "py_compile", "app.py"])
+    agent = build_agent(
+        tmp_path,
+        [
+            '<tool name="write_file" path="app.py"><content>VALUE = 1\n</content></tool>',
+            '<tool>{"name":"run_shell","args":{"command":"pytest missing_tests -q","timeout":20}}</tool>',
+            f'<tool>{{"name":"run_shell","args":{{"command":{json.dumps(compile_command)},"timeout":20}}}}</tool>',
+            "<final>Compile succeeded.</final>",
+            "<final>Compile succeeded.</final>",
+        ],
+        final_readiness_mode="verify",
+        max_steps=4,
+    )
+
+    events = list(agent.engine.run_turn("change code and verify it"))
+
+    notices = [event for event in events if event["type"] == "runtime_notice"]
+    assert len(notices) == 1
+    assert "repository test" in notices[0]["content"]
+    assert events[-2]["type"] == "stop"
+    assert events[-1]["stop_reason"] == "final_gate_blocked"
+    report = json.loads(
+        (agent.current_run_dir / "report.json").read_text(encoding="utf-8")
+    )
+    signal = report["evidence_summaries"]["verification_signal"]
+    assert signal["state"] == "passed"
+    assert signal["command_class"] == "compile"
+    assert signal["test_state"] == "failed"
+
+
 def test_soft_final_readiness_warns_for_net_negative_llm_compaction(tmp_path):
     agent = build_agent(
         tmp_path,

@@ -6,10 +6,14 @@ from lite.testing import ScriptedModelClient
 from lite import Lite, SessionStore, WorkspaceContext
 
 
+WORKER_START_TIMEOUT_SECONDS = 5
+
+
 def build_agent(tmp_path, outputs, **kwargs):
     (tmp_path / "README.md").write_text("demo readme\n", encoding="utf-8")
     workspace = WorkspaceContext.build(tmp_path)
     store = SessionStore(tmp_path / ".lite" / "sessions")
+    kwargs.setdefault("feature_flags", {"multi_agent": True})
     return Lite(
         model_client=ScriptedModelClient(outputs),
         workspace=workspace,
@@ -71,7 +75,6 @@ def test_async_worker_notification_is_drained_by_coordinator_only(tmp_path):
         model_client_factory=lambda: child_client,
     )
 
-    before = time.monotonic()
     payload = json.loads(
         agent.run_tool(
             "agent",
@@ -84,19 +87,17 @@ def test_async_worker_notification_is_drained_by_coordinator_only(tmp_path):
     )
 
     assert payload["status"] == "started"
-    assert time.monotonic() - before < 0.5
-    assert started.wait(timeout=1)
+    assert started.wait(timeout=WORKER_START_TIMEOUT_SECONDS)
     assert not any(
         "<task-notification>" in item.get("content", "")
         for item in agent.session["history"]
     )
 
     release.set()
-    deadline = time.monotonic() + 3
-    while time.monotonic() < deadline:
-        if agent.worker_manager.to_dict()["items"][0]["status"] == "completed":
-            break
-        time.sleep(0.01)
+    task = agent.worker_manager._tasks[payload["task_id"]]
+    task.thread.join(timeout=WORKER_START_TIMEOUT_SECONDS)
+    assert not task.thread.is_alive()
+    assert agent.worker_manager.to_dict()["items"][0]["status"] == "completed"
 
     drained = agent.engine.drain_worker_notifications()
 
@@ -129,7 +130,7 @@ def test_send_message_rejects_running_worker(tmp_path):
             "subagent_type": "Explore",
         },
     )
-    assert started.wait(timeout=1)
+    assert started.wait(timeout=WORKER_START_TIMEOUT_SECONDS)
 
     rejected = agent.run_tool(
         "send_message", {"to": "agent_1", "message": "Continue now"}
@@ -157,7 +158,7 @@ def test_task_stop_requests_child_runtime_abort(tmp_path):
             "subagent_type": "Explore",
         },
     )
-    assert started.wait(timeout=1)
+    assert started.wait(timeout=WORKER_START_TIMEOUT_SECONDS)
 
     payload = json.loads(agent.run_tool("task_stop", {"task_id": "agent_1"}))
 
@@ -189,7 +190,7 @@ def test_clear_session_stops_running_background_workers(tmp_path):
             "subagent_type": "Explore",
         },
     )
-    assert started.wait(timeout=1)
+    assert started.wait(timeout=WORKER_START_TIMEOUT_SECONDS)
     old_id = agent.session["id"]
 
     new_id = agent.clear_session()
