@@ -89,6 +89,14 @@ supports_explicit_prompt_cache = true
 ~~~
 
 Leave this disabled for gateways that only implement automatic prompt caching.
+OpenAI-compatible conversations keep an append-only provider projection across
+turns, so automatic GPT-5.6 cache breakpoints can grow with the conversation
+instead of stopping at the static instruction prefix. The projection starts a
+new generation when the model, endpoint, tools, or canonical session history
+changes, and when the accumulated projection reaches its context budget.
+Workspace and other stable-context updates are appended as a newer snapshot so
+coding turns keep the existing cached prefix while the model receives current
+repository facts.
 
 Anthropic-compatible endpoint 使用同样的结构，只需把 protocol 改为
 anthropic，并填写对应的 base_url 和模型。兼容 Anthropic 协议的其他 provider

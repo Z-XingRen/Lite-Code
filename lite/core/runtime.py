@@ -27,6 +27,7 @@ from . import tool_executor
 from .model_router import ModelClientRouter
 from .plan_mode import PlanModeController
 from .permissions import PermissionChecker
+from .prompt_cache_projection import prepare_prompt_cache_turn
 from .run_store import RunStore
 from .runtime_consumers import default_runtime_consumers
 from .runtime_checkpoints import RuntimeCheckpointsMixin
@@ -259,6 +260,7 @@ class Lite(RuntimeSecretsMixin, RuntimeCheckpointsMixin):
         self._last_tool_result_metadata = {}
         self._pending_tool_result_metadata = {}
         self._frozen_turn_context = None
+        self._prompt_cache_turn = None
         self._turn_context_projection_event_count = 0
         self._last_prefix_refresh = {
             "workspace_changed": False,
@@ -702,6 +704,7 @@ class Lite(RuntimeSecretsMixin, RuntimeCheckpointsMixin):
         """Freeze the session projection used as the base for one provider turn."""
 
         self._frozen_turn_context = None
+        self._prompt_cache_turn = None
         self._turn_context_projection_event_count = len(list(history or []))
         if not self.feature_enabled("frozen_base_context"):
             return
@@ -723,14 +726,24 @@ class Lite(RuntimeSecretsMixin, RuntimeCheckpointsMixin):
                 "context_source": "session_projection",
             }
         )
+        cache_turn = prepare_prompt_cache_turn(
+            self,
+            full_prompt=result.prompt,
+            append_delta=self.context_manager.last_append_delta_prompt,
+            context_refresh=self.context_manager.last_context_refresh_prompt,
+            metadata=metadata,
+            history=history,
+        )
+        self._prompt_cache_turn = cache_turn
         self._frozen_turn_context = {
-            "prompt": result.prompt,
+            "prompt": cache_turn["prompt"],
             "metadata": metadata,
             "base_context_hash": base_hash,
         }
 
     def end_turn_context(self):
         self._frozen_turn_context = None
+        self._prompt_cache_turn = None
         self._turn_context_projection_event_count = 0
 
     def prompt(self, user_message):

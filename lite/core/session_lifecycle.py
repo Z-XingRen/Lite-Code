@@ -75,6 +75,9 @@ def _rebind(runtime, emit_started):
     runtime.current_run_id = ""
     runtime.current_run_dir = None
     runtime.current_task_state = None
+    runtime._frozen_turn_context = None
+    runtime._prompt_cache_turn = None
+    runtime._turn_context_projection_event_count = 0
     runtime.refresh_prefix(force=True)
 
 

@@ -20,6 +20,7 @@ from lite import (
     build_welcome,
 )
 from lite.providers import ProviderError
+from lite.providers.base import ModelConversation
 
 
 def build_workspace(tmp_path):
@@ -468,8 +469,71 @@ def test_openai_gateway_uses_explicit_gpt_5_6_stable_prefix():
             "text": "stable prefix",
             "prompt_cache_breakpoint": {"mode": "explicit"},
         },
-        {"type": "input_text", "text": "\n\ndynamic request"},
+        {
+            "type": "input_text",
+            "text": "\n\ndynamic request",
+            "prompt_cache_breakpoint": {"mode": "explicit"},
+        },
     ]
+
+
+def test_openai_explicit_cache_marks_each_completed_user_message():
+    captured = {}
+
+    class FakeResponse:
+        headers = {"Content-Type": "application/json"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps({"output_text": "ok"}).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        del timeout
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        return FakeResponse()
+
+    client = OpenAICompatibleModelClient(
+        model="gpt-5.6-terra",
+        base_url="https://another-gateway.example/v1",
+        api_key="sk-test",
+        temperature=None,
+        timeout=30,
+        supports_explicit_prompt_cache=True,
+    )
+    conversation = ModelConversation(
+        initial_input="unused",
+        request_messages=(
+            {"role": "user", "content": "stable prefix\n\nfirst request"},
+            {"role": "assistant", "content": "first answer"},
+            {"role": "user", "content": "second request"},
+        ),
+    )
+
+    with patch("urllib.request.urlopen", fake_urlopen):
+        client.complete_result(
+            conversation,
+            42,
+            prompt_cache_key="prefix-hash-123",
+            prompt_cache_prefix_chars=len("stable prefix"),
+        )
+
+    user_items = [
+        item for item in captured["body"]["input"] if item.get("role") == "user"
+    ]
+    assert user_items[0]["content"][0]["prompt_cache_breakpoint"] == {
+        "mode": "explicit"
+    }
+    assert user_items[0]["content"][-1]["prompt_cache_breakpoint"] == {
+        "mode": "explicit"
+    }
+    assert user_items[1]["content"][-1]["prompt_cache_breakpoint"] == {
+        "mode": "explicit"
+    }
 
 
 def test_openai_gpt_5_6_defaults_to_implicit_prompt_cache():

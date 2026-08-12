@@ -3,6 +3,7 @@
 import time
 
 from .before_final_hooks import run_before_final_hooks
+from .prompt_cache_projection import commit_prompt_cache_turn
 from .final_readiness import (
     evaluate_final_readiness,
     readiness_notice,
@@ -85,9 +86,13 @@ def _record_runtime_notice(agent, task_state, notice):
     agent.run_store.write_task_state(task_state)
 
 
-def finish_successful_run(engine, task_state, user_message, final, run_started_at):
+def finish_successful_run(
+    engine, task_state, user_message, final, run_started_at, conversation=None
+):
     agent = engine.runtime
     agent.record({"role": "assistant", "content": final, "created_at": now()})
+    if commit_prompt_cache_turn(agent, conversation, final):
+        agent.persist_session()
     if agent.runtime_mode == "plan":
         agent.exit_plan_mode()
     agent.session_event_bus.emit(

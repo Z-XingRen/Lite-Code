@@ -73,6 +73,8 @@ class ContextManager:
         self.section_floors = self._compute_section_floors()
         self.reduction_order = tuple(reduction_order or REDUCTION_ORDER)
         self.history_builder = TurnHistoryBuilder(agent)
+        self.last_append_delta_prompt = ""
+        self.last_context_refresh_prompt = ""
 
     def build(self, user_message, *, history=None, context_source="session_transcript"):
         """按预算组装一轮完整 prompt。
@@ -146,6 +148,8 @@ class ContextManager:
                 section_texts, selected_notes=selected_notes, history=history
             )
             prompt = self._assemble_prompt(rendered)
+            self.last_append_delta_prompt = self._assemble_append_delta(rendered)
+            self.last_context_refresh_prompt = self._assemble_context_refresh(rendered)
             metadata = self._metadata(
                 prompt=prompt,
                 rendered=rendered,
@@ -220,6 +224,8 @@ class ContextManager:
             section_texts=section_texts,
             pressure=pressure,
         )
+        self.last_append_delta_prompt = self._assemble_append_delta(rendered)
+        self.last_context_refresh_prompt = self._assemble_context_refresh(rendered)
         if context_source != "session_transcript":
             metadata["context_source"] = str(context_source)
         return prompt, metadata
@@ -408,6 +414,21 @@ class ContextManager:
         # Cacheable rules come first, append-oriented history follows, and
         # request-dependent memory stays near the current request.
         return "\n\n".join(rendered[section].rendered for section in SECTION_ORDER).strip()
+
+    def _assemble_append_delta(self, rendered):
+        dynamic_sections = ("memory", "relevant_memory", CURRENT_REQUEST_SECTION)
+        return "\n\n".join(
+            rendered[section].rendered for section in dynamic_sections
+        ).strip()
+
+    def _assemble_context_refresh(self, rendered):
+        sections = tuple(section for section in SECTION_ORDER if section != "history")
+        snapshot = "\n\n".join(rendered[section].rendered for section in sections)
+        return (
+            "Context refresh: the following repository and runtime snapshot "
+            "supersedes earlier versions of the same facts.\n\n"
+            f"{snapshot}"
+        ).strip()
 
     def _prompt_cache_metadata(self, rendered):
         stable_sections = SECTION_ORDER[: SECTION_ORDER.index("history")]

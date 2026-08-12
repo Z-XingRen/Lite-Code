@@ -168,7 +168,11 @@ def test_openai_gateway_stream_uses_explicit_gpt_5_6_stable_prefix():
             "text": "stable",
             "prompt_cache_breakpoint": {"mode": "explicit"},
         },
-        {"type": "input_text", "text": "\n\ndynamic"},
+        {
+            "type": "input_text",
+            "text": "\n\ndynamic",
+            "prompt_cache_breakpoint": {"mode": "explicit"},
+        },
     ]
 
 

@@ -71,7 +71,17 @@ def rebuild_model_request(agent, prompt, previous=None, *, tools=None):
         tools=selected_tools,
         turns=copy.deepcopy(list(getattr(previous, "turns", ()) or ())),
     )
-    messages = conversation_messages(conversation)
+    base_messages = copy.deepcopy(
+        list(
+            (getattr(agent, "_prompt_cache_turn", None) or {}).get(
+                "base_messages", []
+            )
+        )
+    )
+    messages = [
+        *base_messages,
+        *conversation_messages(conversation),
+    ]
     transform = getattr(agent, "context_transform", None)
     if callable(transform):
         transformed = transform(copy.deepcopy(messages), token)
@@ -82,12 +92,21 @@ def rebuild_model_request(agent, prompt, previous=None, *, tools=None):
     hardened, report = harden_context_messages(messages)
     report["transform_applied"] = callable(transform)
     conversation.request_messages = tuple(hardened)
-    report.update(_request_telemetry(agent, conversation, hardened))
+    report.update(
+        _request_telemetry(
+            agent,
+            conversation,
+            hardened,
+            cache_base_message_count=len(base_messages),
+        )
+    )
     conversation.context_metadata = report
     return conversation, report
 
 
-def _request_telemetry(agent, conversation, messages):
+def _request_telemetry(
+    agent, conversation, messages, *, cache_base_message_count=0
+):
     source = (
         "session_projection_plus_turn_delta"
         if getattr(agent, "_frozen_turn_context", None) is not None
@@ -105,6 +124,7 @@ def _request_telemetry(agent, conversation, messages):
         ),
         "current_turn_delta_count": len(conversation.turns),
         "provider_turn_count": len(conversation.turns),
+        "cache_base_message_count": int(cache_base_message_count),
         "duplicate_tool_result_count": _duplicate_tool_result_count(
             conversation.initial_input, messages
         ),

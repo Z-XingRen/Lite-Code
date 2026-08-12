@@ -29,7 +29,8 @@ def test_builtin_skills_are_available_in_context(tmp_path):
     prompt = agent.prompt("what can you do?")
     assert "Available skills:" in prompt
     assert "/review" in prompt
-    assert prompt.index("Memory:") < prompt.index("Available skills:") < prompt.index("Relevant memory:")
+    assert prompt.index("Available skills:") < prompt.index("Memory:")
+    assert prompt.index("Memory:") < prompt.index("Relevant memory:")
 
 
 def test_prompt_includes_auto_memory_policy_and_index(tmp_path):

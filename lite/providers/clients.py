@@ -276,11 +276,12 @@ def _openai_conversation_input(conversation):
 
 
 def _add_openai_prompt_cache_breakpoint(input_items, prefix_chars):
-    """Mark stable leading text without changing the model-visible prompt."""
+    """Mark the stable prefix and completed user messages as cache breakpoints."""
 
     remaining = max(0, int(prefix_chars or 0))
     if not remaining:
         return
+    stable_marked = False
     for item in input_items:
         if item.get("role") != "user" or not isinstance(item.get("content"), list):
             continue
@@ -305,8 +306,19 @@ def _add_openai_prompt_cache_breakpoint(input_items, prefix_chars):
             if dynamic:
                 replacement.append({"type": "input_text", "text": dynamic})
             item["content"][index : index + 1] = replacement
-            return
-        return
+            stable_marked = True
+            break
+        if stable_marked:
+            break
+
+    for item in input_items:
+        if item.get("role") != "user" or not isinstance(item.get("content"), list):
+            continue
+        for block in reversed(item["content"]):
+            if block.get("type") not in {"input_text", "input_image", "input_file"}:
+                continue
+            block.setdefault("prompt_cache_breakpoint", {"mode": "explicit"})
+            break
 
 
 def _openai_request_messages(messages):
@@ -881,6 +893,7 @@ class OpenAICompatibleModelClient:
         # Gateways can proxy cache-capable models under any host. Cache
         # capability follows the configured protocol, not a URL allowlist.
         self.supports_prompt_cache = True
+        self.supports_append_prompt_cache = True
         self.supports_explicit_prompt_cache = bool(
             supports_explicit_prompt_cache
         ) and "gpt-5.6" in self.model.lower()

@@ -493,7 +493,12 @@ class Engine:
                 return
 
             yield from finish_successful_run(
-                self, task_state, user_message, final, run_started_at
+                self,
+                task_state,
+                user_message,
+                final,
+                run_started_at,
+                conversation=conversation,
             )
             return
 

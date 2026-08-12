@@ -16,6 +16,9 @@ def test_context_report_builder_matches_existing_metadata_contract():
     agent = DummyAgent()
     rendered = {
         "prefix": SectionRender(raw="prefix raw", budget=100, rendered="prefix rendered", details={}),
+        "memory_contract": SectionRender(
+            raw="contract raw", budget=95, rendered="contract rendered", details={}
+        ),
         "memory": SectionRender(raw="memory raw", budget=90, rendered="memory rendered", details={}),
         "skills": SectionRender(raw="skills raw", budget=80, rendered="skills rendered", details={}),
         "relevant_memory": SectionRender(
@@ -58,6 +61,7 @@ def test_context_report_builder_matches_existing_metadata_contract():
     }
     budgets = {
         "prefix": 100,
+        "memory_contract": 95,
         "memory": 90,
         "skills": 80,
         "relevant_memory": 70,
@@ -81,6 +85,11 @@ def test_context_report_builder_matches_existing_metadata_contract():
         },
         "sections": {
             "prefix": {"raw_chars": 10, "budget_chars": 100, "rendered_chars": 15},
+            "memory_contract": {
+                "raw_chars": 12,
+                "budget_chars": 95,
+                "rendered_chars": 17,
+            },
             "memory": {"raw_chars": 10, "budget_chars": 90, "rendered_chars": 15},
             "skills": {"raw_chars": 10, "budget_chars": 80, "rendered_chars": 15},
             "relevant_memory": {"raw_chars": 38, "budget_chars": 70, "rendered_chars": 27},
