@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+from collections import Counter
 from pathlib import Path
 
 from .run_evidence import RunEvidence
@@ -92,8 +94,49 @@ def row_from_trial(task, trial, *, variant, repeat):
     }
 
 
-def write_results(rows, output_dir):
-    """Write raw JSONL rows and a Markdown table without hiding task variance."""
+def result_matrix_keys(tasks, variants, repetitions):
+    """Return the fixed task, repeat, and variant keys for one evaluation."""
+
+    return frozenset(
+        (str(task["id"]), repeat, str(variant))
+        for repeat in range(int(repetitions))
+        for task in tasks
+        for variant in variants
+    )
+
+
+def validate_result_matrix(rows, expected_keys, *, require_complete=False):
+    """Reject ambiguous rows and report whether the expected matrix is complete."""
+
+    expected = frozenset(expected_keys)
+    counts = Counter(
+        (
+            str(row.get("task_id", "")),
+            int(row.get("repeat", 0)),
+            str(row.get("variant", "")),
+        )
+        for row in rows
+    )
+    seen = set(counts)
+    duplicates = {key for key, count in counts.items() if count > 1}
+    if duplicates:
+        raise ValueError(f"duplicate result rows: {_format_keys(duplicates)}")
+    unexpected = seen - expected
+    if unexpected:
+        raise ValueError(f"unexpected result rows: {_format_keys(unexpected)}")
+    missing = expected - seen
+    if require_complete and missing:
+        raise ValueError(f"missing result rows: {_format_keys(missing)}")
+    return {
+        "complete": not missing,
+        "completed_count": len(seen),
+        "expected_count": len(expected),
+        "missing_keys": missing,
+    }
+
+
+def write_results(rows, output_dir, *, expected_keys=None, require_complete=False):
+    """Atomically write raw rows and a completeness-bound Markdown summary."""
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -105,30 +148,80 @@ def write_results(rows, output_dir):
             int(row.get("repeat", 0)),
         ),
     )
+    matrix = None
+    if expected_keys is not None:
+        matrix = validate_result_matrix(
+            ordered,
+            expected_keys,
+            require_complete=require_complete,
+        )
     jsonl = output_dir / "results.jsonl"
-    jsonl.write_text(
-        "".join(
-            json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n"
-            for row in ordered
-        ),
-        encoding="utf-8",
+    jsonl_text = "".join(
+        json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n"
+        for row in ordered
     )
+    _atomic_write_text(jsonl, jsonl_text)
+    results_digest = hashlib.sha256(jsonl_text.encode("utf-8")).hexdigest()
     markdown = output_dir / "summary.md"
+    if matrix is not None and not matrix["complete"]:
+        lines = [
+            "# Lite Real Task Evaluation (Incomplete)",
+            "",
+            (
+                f"Status: {matrix['completed_count']}/{matrix['expected_count']} "
+                "result rows are present. This artifact is not a valid baseline."
+            ),
+            "",
+            f"Results SHA-256: `sha256:{results_digest}`",
+        ]
+        _atomic_write_text(markdown, "\n".join(lines) + "\n")
+        return {"jsonl": jsonl, "markdown": markdown, "complete": False}
+
     columns = ("task_id", "variant", "repeat", *METRIC_FIELDS)
     lines = [
         "# Lite Real Task Evaluation",
         "",
-        "| " + " | ".join(columns) + " |",
-        "| " + " | ".join("---" for _ in columns) + " |",
     ]
+    if matrix is not None:
+        lines.extend(
+            [
+                (
+                    f"Status: Complete, {matrix['completed_count']}/"
+                    f"{matrix['expected_count']} result rows are present."
+                ),
+                "",
+                f"Results SHA-256: `sha256:{results_digest}`",
+                "",
+            ]
+        )
+    lines.extend(
+        [
+            "| " + " | ".join(columns) + " |",
+            "| " + " | ".join("---" for _ in columns) + " |",
+        ]
+    )
     for row in ordered:
         lines.append(
             "| "
             + " | ".join(_markdown_cell(row.get(column, "")) for column in columns)
             + " |"
         )
-    markdown.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return {"jsonl": jsonl, "markdown": markdown}
+    _atomic_write_text(markdown, "\n".join(lines) + "\n")
+    return {"jsonl": jsonl, "markdown": markdown, "complete": True}
+
+
+def _atomic_write_text(path, content):
+    path = Path(path)
+    temporary = path.with_name(f".{path.name}.tmp")
+    temporary.write_text(content, encoding="utf-8", newline="")
+    temporary.replace(path)
+
+
+def _format_keys(keys):
+    return ", ".join(
+        f"{task_id}/{repeat}/{variant}"
+        for task_id, repeat, variant in sorted(keys)
+    )
 
 
 def _markdown_cell(value):

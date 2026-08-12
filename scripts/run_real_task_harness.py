@@ -14,7 +14,13 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from lite.evaluation.real_task_harness import load_manifest, row_from_trial, write_results  # noqa: E402
+from lite.evaluation.real_task_harness import (  # noqa: E402
+    load_manifest,
+    result_matrix_keys,
+    row_from_trial,
+    validate_result_matrix,
+    write_results,
+)
 from scripts.formal_eval import run_lite_quality_v1  # noqa: E402
 
 
@@ -114,6 +120,7 @@ def main(argv=None):
         )
 
     rows = []
+    expected_keys = result_matrix_keys(tasks, variants, repetitions)
     results_path = output_dir / "results.jsonl"
     if results_path.is_file():
         rows = [
@@ -121,6 +128,7 @@ def main(argv=None):
             for line in results_path.read_text(encoding="utf-8").splitlines()
             if line.strip()
         ]
+        validate_result_matrix(rows, expected_keys)
     completed = {
         (row["task_id"], int(row["repeat"]), row["variant"]) for row in rows
     }
@@ -141,9 +149,14 @@ def main(argv=None):
                 rows.append(
                     row_from_trial(task, trial, variant=variant, repeat=repeat)
                 )
-                write_results(rows, output_dir)
+                write_results(rows, output_dir, expected_keys=expected_keys)
                 print(json.dumps(rows[-1], ensure_ascii=False, sort_keys=True), flush=True)
-    write_results(rows, output_dir)
+    write_results(
+        rows,
+        output_dir,
+        expected_keys=expected_keys,
+        require_complete=True,
+    )
     return 0
 
 
