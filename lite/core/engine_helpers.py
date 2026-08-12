@@ -98,6 +98,7 @@ def commit_tool_payload(
     if not (
         agent.feature_enabled("journal_checkpoint_policy")
         and tool_metadata.get("read_only")
+        and tool_metadata.get("tool_status") == "ok"
     ):
         agent.session_event_bus.emit(
             "tool_finished",
@@ -127,12 +128,21 @@ def commit_tool_payload(
         "deferred_governance_decisions", []
     )
     if deferred_governance:
-        agent.emit_trace(
-            task_state,
-            "governance_batch",
-            {"decisions": deferred_governance, "tool_name": name},
-            persist_state=False,
-        )
+        if tool_metadata.get("tool_status") == "ok":
+            agent.emit_trace(
+                task_state,
+                "governance_batch",
+                {"decisions": deferred_governance, "tool_name": name},
+                persist_state=False,
+            )
+        else:
+            for decision in deferred_governance:
+                agent.emit_trace(
+                    task_state,
+                    "governance_decision",
+                    {**decision, "tool_name": name},
+                    persist_state=False,
+                )
     checkpoint = None
     workspace_changed = bool(tool_metadata.get("workspace_changed"))
     successful_change = tool_metadata.get("tool_status") == "ok"
@@ -190,7 +200,21 @@ def commit_tool_payload(
             is_error=str(tool_metadata.get("tool_status", "")) != "ok",
         ),
         tuple(notifications),
+        completion_contract_feedback(tool_metadata),
     )
+
+
+def completion_contract_feedback(tool_metadata):
+    if (
+        tool_metadata.get("tool_status") == "ok"
+        and tool_metadata.get("workspace_changed") is True
+        and not tool_metadata.get("verification_receipt")
+    ):
+        return (
+            "Completion contract: the workspace changed. Run focused verification "
+            "before returning the final answer."
+        )
+    return ""
 
 
 def execute_native_tool_calls(
@@ -235,7 +259,7 @@ def execute_native_tool_calls(
                 )
             )
             continue
-        output, notifications = yield from execute_tool_payload(
+        output, notifications, contract_feedback = yield from execute_tool_payload(
             engine,
             task_state,
             user_message,
@@ -243,6 +267,8 @@ def execute_native_tool_calls(
         )
         outputs.append(output)
         feedback.extend(notifications)
+        if contract_feedback:
+            feedback.append(contract_feedback)
         tool_steps += 1
         executed += 1
         if agent.abort_requested:
@@ -278,7 +304,7 @@ def execute_parallel_native_tool_calls(
     feedback = []
     for call, tool_started_at, outcome in zip(calls, started, outcomes):
         agent._last_tool_result_metadata = outcome.metadata
-        output, notifications = yield from commit_tool_payload(
+        output, notifications, contract_feedback = yield from commit_tool_payload(
             engine,
             task_state,
             user_message,
@@ -291,6 +317,8 @@ def execute_parallel_native_tool_calls(
         )
         outputs.append(output)
         feedback.extend(notifications)
+        if contract_feedback:
+            feedback.append(contract_feedback)
     tool_steps += len(calls)
     if not agent.abort_requested:
         conversation.append_result(result, tool_outputs=outputs, feedback=feedback)

@@ -80,12 +80,13 @@ def test_warn_final_readiness_records_one_decision_without_an_extra_model_call(t
     )
 
 
-def test_enforce_final_readiness_blocks_unverified_workspace_changes(tmp_path):
+def test_enforce_final_readiness_repairs_once_then_blocks_unverified_changes(tmp_path):
     agent = build_agent(
         tmp_path,
         [
             '<tool name="write_file" path="notes/result.txt"><content>ok\n</content></tool>',
             "<final>Done without verification.</final>",
+            "<final>Still done without verification.</final>",
         ],
         final_readiness_mode="enforce",
         max_steps=2,
@@ -93,6 +94,9 @@ def test_enforce_final_readiness_blocks_unverified_workspace_changes(tmp_path):
 
     events = list(agent.engine.run_turn("write the result"))
 
+    notices = [event for event in events if event["type"] == "runtime_notice"]
+    assert len(notices) == 1
+    assert "Verification did not succeed" in notices[0]["content"]
     stop_event = next(event for event in events if event["type"] == "stop")
     assert "Verification did not succeed" in stop_event["content"]
     assert events[-1]["stop_reason"] == "final_gate_blocked"
@@ -100,7 +104,12 @@ def test_enforce_final_readiness_blocks_unverified_workspace_changes(tmp_path):
     trace = read_jsonl(agent.current_run_dir / "trace.jsonl")
     readiness = [event for event in trace if event["event"] == "final_readiness_decision"]
     assert [(event["decision"], event["action"]) for event in readiness] == [
-        ("block", "block")
+        ("repair", "runtime_notice"),
+        ("block", "block"),
+    ]
+    assert readiness[-1]["completion_contract"]["repair_attempt_count"] == 1
+    assert readiness[-1]["completion_contract"]["unresolved_codes"] == [
+        "verification_required"
     ]
 
     report = json.loads(
@@ -109,6 +118,35 @@ def test_enforce_final_readiness_blocks_unverified_workspace_changes(tmp_path):
     assert report["status"] == "stopped"
     assert report["stop_reason"] == "final_gate_blocked"
     assert report["evidence_summaries"]["final_readiness_summary"]["block_count"] == 1
+
+
+def test_enforce_completion_contract_accepts_verification_after_repair_notice(tmp_path):
+    compile_command = shell_join([sys.executable, "-m", "py_compile", "app.py"])
+    agent = build_agent(
+        tmp_path,
+        [
+            '<tool name="write_file" path="app.py"><content>VALUE = 1\n</content></tool>',
+            "<final>Done before verification.</final>",
+            f'<tool>{{"name":"run_shell","args":{{"command":{json.dumps(compile_command)},"timeout":20}}}}</tool>',
+            "<final>Verified.</final>",
+        ],
+        final_readiness_mode="enforce",
+        max_steps=3,
+    )
+
+    events = list(agent.engine.run_turn("change app.py and verify it"))
+
+    notices = [event for event in events if event["type"] == "runtime_notice"]
+    assert len(notices) == 1
+    assert events[-2]["type"] == "final"
+    assert events[-2]["content"] == "Verified."
+    report = json.loads(
+        (agent.current_run_dir / "report.json").read_text(encoding="utf-8")
+    )
+    contract = report["evidence_summaries"]["completion_contract"]
+    assert contract["ready"] is True
+    assert contract["unresolved_codes"] == []
+    assert contract["repair_attempt_count"] == 1
 
 
 def test_enforce_final_readiness_blocks_partial_success_workspace_changes(tmp_path):

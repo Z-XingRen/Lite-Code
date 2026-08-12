@@ -87,7 +87,11 @@ def test_registered_tools_expose_conservative_effect_classification(tmp_path):
 
 def test_read_only_batch_executes_concurrently_but_commits_source_order(tmp_path):
     calls = read_calls()
-    agent = build_agent(tmp_path, [tool_batch(*calls), "Done."])
+    agent = build_agent(
+        tmp_path,
+        [tool_batch(*calls), "Done."],
+        feature_flags={"journal_checkpoint_policy": False},
+    )
     both_started = threading.Event()
     second_finished = threading.Event()
     lock = threading.Lock()

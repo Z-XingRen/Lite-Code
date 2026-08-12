@@ -33,6 +33,11 @@ def update_evidence_summaries(summaries, event, changed_paths=None):
         summaries["governance_summary"] = reduce_governance_summary(
             summaries.get("governance_summary", {}), event
         )
+    elif event.get("event") == "governance_batch":
+        governance = summaries.get("governance_summary", {})
+        for decision in event.get("decisions", []) or []:
+            governance = reduce_governance_summary(governance, decision)
+        summaries["governance_summary"] = governance
     elif event.get("event") == "tool_executed":
         summaries["verification_signal"] = reduce_verification_signal(
             summaries.get("verification_signal", {}), event, changed_paths or []

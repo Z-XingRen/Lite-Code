@@ -13,7 +13,7 @@ from lite.evaluation.real_task_harness import (
     validate_result_matrix,
     write_results,
 )
-from scripts.run_real_task_harness import feature_flags_for_task
+from scripts.run_real_task_harness import VARIANT_FLAGS, feature_flags_for_task
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -58,6 +58,31 @@ def test_real_task_features_enable_multi_agent_only_for_explicit_worker_tasks():
 
     assert feature_flags_for_task(baseline_task, "optimized")["multi_agent"] is False
     assert feature_flags_for_task(worker_task, "optimized")["multi_agent"] is True
+
+
+def test_real_task_variants_isolate_context_and_persistence_effects():
+    assert VARIANT_FLAGS == {
+        "baseline": {
+            "context_reduction": True,
+            "frozen_base_context": False,
+            "journal_checkpoint_policy": False,
+        },
+        "frozen_context": {
+            "context_reduction": True,
+            "frozen_base_context": True,
+            "journal_checkpoint_policy": False,
+        },
+        "journal_policy": {
+            "context_reduction": True,
+            "frozen_base_context": False,
+            "journal_checkpoint_policy": True,
+        },
+        "optimized": {
+            "context_reduction": True,
+            "frozen_base_context": True,
+            "journal_checkpoint_policy": True,
+        },
+    }
 
 
 def test_real_task_results_write_jsonl_and_task_level_markdown(tmp_path):
@@ -146,4 +171,5 @@ def _result_row(variant):
         "persistence_write_count": 2,
         "wall_time": 0.25,
         "final_stop_reason": "final_answer_returned",
+        "failure_category": "none",
     }

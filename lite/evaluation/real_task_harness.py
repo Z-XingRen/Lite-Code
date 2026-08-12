@@ -25,6 +25,7 @@ METRIC_FIELDS = (
     "persistence_write_count",
     "wall_time",
     "final_stop_reason",
+    "failure_category",
 )
 
 
@@ -89,6 +90,9 @@ def row_from_trial(task, trial, *, variant, repeat):
         "persistence_write_count": persistence_writes,
         "wall_time": round(float(trial.get("wall_time_ms", 0) or 0) / 1000, 6),
         "final_stop_reason": evidence.stop_reason(),
+        "failure_category": str(
+            trial.get("failure_category", "incomplete_evidence")
+        ),
         "errors": list(trial.get("errors", []) or []),
         "usage_source": str(usage.get("usage_source", "none")),
     }

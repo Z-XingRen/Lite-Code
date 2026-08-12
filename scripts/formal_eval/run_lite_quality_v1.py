@@ -166,12 +166,25 @@ def grade_task(task_id, workspace):
 
 def trace_events(workspace):
     events = []
-    for path in sorted((workspace / ".lite" / "runs").glob("*/trace.jsonl")):
+    evidence_paths = [
+        ("run", path)
+        for path in sorted((workspace / ".lite" / "runs").glob("*/trace.jsonl"))
+    ]
+    evidence_paths.extend(
+        ("session", path)
+        for path in sorted(
+            (workspace / ".lite" / "sessions").glob("*.events.jsonl")
+        )
+    )
+    for source, path in evidence_paths:
         for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
             try:
-                events.append(json.loads(line))
+                event = json.loads(line)
             except json.JSONDecodeError:
                 pass
+            else:
+                event.setdefault("evidence_source", source)
+                events.append(event)
     return events
 
 
@@ -201,6 +214,36 @@ def usage_from_workspace(workspace):
         else ("mixed" if total["usage_sources"] else "none")
     )
     return total
+
+
+def classify_trial_failure(row):
+    if row.get("scc"):
+        return "none"
+    errors = [str(error) for error in row.get("errors", []) or []]
+    if any(error.startswith("wall_timeout:") for error in errors):
+        return "timeout"
+    if row.get("stop_reason") == "model_error":
+        return "provider_error"
+    if int((row.get("grader", {}) or {}).get("grader_returncode", 0) or 0) != 0:
+        return "grader_infrastructure_error"
+    if errors:
+        return "runtime_error"
+    if row.get("target_pass") is False:
+        return "target_verifier_failed"
+    if row.get("regression_pass") is False:
+        return "regression_failed"
+    if row.get("scope_pass") is False:
+        return "scope_violation"
+    required = dict(row.get("required_events", {}) or {})
+    if required and not all(required.values()):
+        return "required_evidence_missing"
+    if row.get("finalization_pass") is False:
+        return "finalization_missing"
+    if row.get("budget_pass") is False:
+        return "budget_exceeded"
+    if row.get("safety_pass") is False:
+        return "safety_violation"
+    return "incomplete_evidence"
 
 
 def run_trial(task, repeat, out_root, config, *, feature_flags=None):
@@ -279,7 +322,7 @@ def run_trial(task, repeat, out_root, config, *, feature_flags=None):
         and not errors
     )
     usage = usage_from_workspace(workspace)
-    return {
+    row = {
         "task_id": task["id"],
         "category": task["category"],
         "repeat": repeat,
@@ -295,6 +338,7 @@ def run_trial(task, repeat, out_root, config, *, feature_flags=None):
         "required_events": required,
         "events": event_names,
         "errors": errors,
+        "stop_reason": str(getattr(task_state, "stop_reason", "") or ""),
         "grader": grader,
         "usage": usage,
         "tool_steps": int(getattr(task_state, "tool_steps", 0) or 0),
@@ -302,6 +346,8 @@ def run_trial(task, repeat, out_root, config, *, feature_flags=None):
         "wall_time_ms": int((time.monotonic() - started) * 1000),
         "workspace": str(workspace),
     }
+    row["failure_category"] = classify_trial_failure(row)
+    return row
 
 
 def apply_reference(task, workspace):
@@ -525,7 +571,7 @@ def run_live(manifest, out_dir, repetitions):
     }
     for row in rows:
         if not row["scc"]:
-            key = row["category"]
+            key = row.get("failure_category", "incomplete_evidence")
             summary["failure_by_category"][key] = (
                 summary["failure_by_category"].get(key, 0) + 1
             )

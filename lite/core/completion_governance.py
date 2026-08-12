@@ -3,7 +3,11 @@
 import time
 
 from .before_final_hooks import run_before_final_hooks
-from .final_readiness import evaluate_final_readiness, readiness_notice
+from .final_readiness import (
+    evaluate_final_readiness,
+    readiness_notice,
+    record_completion_repair_attempt,
+)
 from .turn_transitions import emit_terminal_transition
 from .workspace import clip, now
 
@@ -38,11 +42,34 @@ def final_readiness_action(engine, task_state, proposed_final=""):
     )
     if decision["mode"] == "off":
         return "allow", ""
-    agent.emit_trace(task_state, "final_readiness_decision", decision)
     action = str(decision.get("action", "none"))
+    if action == "block" and _can_request_completion_repair(agent, task_state, decision):
+        decision["decision"] = "repair"
+        decision["action"] = "runtime_notice"
+        decision["completion_contract"] = record_completion_repair_attempt(
+            task_state, decision.get("completion_contract", {})
+        )
+        action = "runtime_notice"
+    agent.emit_trace(task_state, "final_readiness_decision", decision)
+    if action == "runtime_notice":
+        notice = readiness_notice(decision)
+        _record_runtime_notice(agent, task_state, notice)
+        return action, notice
     if action == "block":
         return action, readiness_notice(decision)
     return "allow", ""
+
+
+def _can_request_completion_repair(agent, task_state, decision):
+    contract = dict(decision.get("completion_contract", {}) or {})
+    blocking = set(contract.get("blocking_codes", []) or [])
+    repairable = {"verification_required", "missing_required_artifact"}
+    return bool(
+        blocking
+        and blocking.issubset(repairable)
+        and int(contract.get("repair_attempt_count", 0) or 0) == 0
+        and int(task_state.tool_steps) < int(agent.max_steps)
+    )
 
 
 def _record_runtime_notice(agent, task_state, notice):

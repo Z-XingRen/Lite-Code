@@ -21,6 +21,71 @@ def test_formal_task_selection_is_explicit_and_ordered():
         select_tasks(manifest, "missing")
 
 
+def test_formal_evidence_includes_run_and_session_events(tmp_path):
+    run_dir = tmp_path / ".lite" / "runs" / "run_1"
+    session_dir = tmp_path / ".lite" / "sessions"
+    run_dir.mkdir(parents=True)
+    session_dir.mkdir(parents=True)
+    (run_dir / "trace.jsonl").write_text(
+        json.dumps({"event": "tool_executed", "name": "agent"}) + "\n",
+        encoding="utf-8",
+    )
+    (session_dir / "session.events.jsonl").write_text(
+        json.dumps({"event": "worker_started", "worker_id": "agent_1"}) + "\n",
+        encoding="utf-8",
+    )
+
+    events = run_lite_quality_v1.trace_events(tmp_path)
+
+    assert [event["event"] for event in events] == [
+        "tool_executed",
+        "worker_started",
+    ]
+    assert events[1]["evidence_source"] == "session"
+
+
+def test_formal_prompts_fully_state_graded_data_contracts():
+    manifest = json.loads(run_lite_quality_v1.MANIFEST.read_text(encoding="utf-8"))
+    tasks = {task["id"]: task for task in manifest["tasks"]}
+
+    cli_prompt = tasks["C01_json_cli"]["prompt"]
+    event_prompt = tasks["M04_event_contract"]["prompt"]
+
+    assert "multiplied by 2" in cli_prompt
+    assert "nested data object" in event_prompt
+    assert "data.type" in event_prompt
+    assert "data.payload" in event_prompt
+
+
+@pytest.mark.parametrize(
+    ("row", "expected"),
+    [
+        ({"scc": True}, "none"),
+        ({"scc": False, "errors": ["wall_timeout:240s"]}, "timeout"),
+        ({"scc": False, "stop_reason": "model_error"}, "provider_error"),
+        (
+            {"scc": False, "grader": {"grader_returncode": 2}},
+            "grader_infrastructure_error",
+        ),
+        ({"scc": False, "target_pass": False}, "target_verifier_failed"),
+        (
+            {
+                "scc": False,
+                "target_pass": True,
+                "regression_pass": True,
+                "scope_pass": True,
+                "required_events": {"worker_started": False},
+            },
+            "required_evidence_missing",
+        ),
+    ],
+)
+def test_formal_failure_categories_separate_runtime_and_agent_failures(
+    row, expected
+):
+    assert run_lite_quality_v1.classify_trial_failure(row) == expected
+
+
 def test_harbor_command_uses_toml_model_and_bounded_subset(tmp_path, monkeypatch):
     manifest = {
         "subsets": {

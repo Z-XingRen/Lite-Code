@@ -30,6 +30,16 @@ VARIANT_FLAGS = {
         "frozen_base_context": False,
         "journal_checkpoint_policy": False,
     },
+    "frozen_context": {
+        "context_reduction": True,
+        "frozen_base_context": True,
+        "journal_checkpoint_policy": False,
+    },
+    "journal_policy": {
+        "context_reduction": True,
+        "frozen_base_context": False,
+        "journal_checkpoint_policy": True,
+    },
     "optimized": {
         "context_reduction": True,
         "frozen_base_context": True,
@@ -86,7 +96,10 @@ def main(argv=None):
     parser.add_argument("--output-dir", default=str(ROOT / "artifacts/real-task-v1"))
     parser.add_argument("--task-ids", default="")
     parser.add_argument("--repetitions", type=int, default=0)
-    parser.add_argument("--variants", default="baseline,optimized")
+    parser.add_argument(
+        "--variants",
+        default="baseline,frozen_context,journal_policy,optimized",
+    )
     args = parser.parse_args(argv)
 
     manifest = load_manifest(ROOT)

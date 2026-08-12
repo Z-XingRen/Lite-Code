@@ -72,6 +72,24 @@ def test_engine_streams_a_real_session_with_tool_artifacts(tmp_path):
     assert report["final_answer"] == "Wrote it."
 
 
+def test_workspace_mutation_adds_completion_contract_feedback(tmp_path):
+    agent = build_agent(
+        tmp_path,
+        [
+            '<tool name="write_file" path="app.py"><content>VALUE = 1\n</content></tool>',
+            "<final>Done.</final>",
+        ],
+    )
+
+    agent.ask("change app.py")
+
+    feedback = agent.model_client.requests[-1].turns[0].feedback
+    assert feedback == (
+        "Completion contract: the workspace changed. Run focused verification "
+        "before returning the final answer.",
+    )
+
+
 def test_engine_reports_context_budget_summary_from_prompt_metadata(tmp_path):
     agent = build_agent(tmp_path, ["<final>Done.</final>"])
 

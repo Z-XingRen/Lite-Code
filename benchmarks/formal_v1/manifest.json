@@ -194,7 +194,7 @@
     {
       "id": "M04_event_contract",
       "category": "multi-file-contract",
-      "prompt": "Repair the event producer/consumer contract across src/events.py and src/consumer.py. Events must use a data object with type and payload, and the consumer must return the payload for matching event types. Do not edit tests.",
+      "prompt": "Repair the event producer/consumer contract across src/events.py and src/consumer.py. build_event must return the top-level event type and a nested data object where data.type equals the event type and data.payload equals the supplied payload. The consumer must read data.type and return data.payload for matching event types, otherwise None. Do not edit tests.",
       "follow_up_prompt": "",
       "fixture_repo": "benchmarks/formal_v1/fixtures/M04_event_contract",
       "allowed_tools": [
@@ -222,7 +222,7 @@
     {
       "id": "C01_json_cli",
       "category": "cli-config-io",
-      "prompt": "Fix src/cli.py so main accepts JSON lines with name and value, writes one JSON result per input line, ignores blank lines, and exits non-zero for malformed input. Keep the command entrypoint unchanged.",
+      "prompt": "Fix src/cli.py so main accepts JSON lines with name and value, writes one JSON result per input line with the name preserved and the value multiplied by 2, ignores blank lines, and exits non-zero for malformed input. Keep the command entrypoint unchanged.",
       "follow_up_prompt": "",
       "fixture_repo": "benchmarks/formal_v1/fixtures/C01_json_cli",
       "allowed_tools": [
