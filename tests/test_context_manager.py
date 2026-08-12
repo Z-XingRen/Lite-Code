@@ -30,13 +30,28 @@ def test_context_manager_assembles_sections_in_expected_order(tmp_path):
 
     prompt, metadata = ContextManager(agent).build("Where is the deploy key?")
 
-    assert prompt.index("You are lite") < prompt.index("Memory:")
-    assert prompt.index("Memory:") < prompt.index("Available skills:")
-    assert prompt.index("Available skills:") < prompt.index("Relevant memory:")
-    assert prompt.index("Relevant memory:") < prompt.index("Transcript:")
-    assert prompt.index("Transcript:") < prompt.index("Current user request:")
+    assert prompt.index("You are lite") < prompt.index("Available skills:")
+    assert prompt.index("Available skills:") < prompt.index("# Auto Memory")
+    assert prompt.index("# Auto Memory") < prompt.index("Transcript:")
+    assert prompt.index("Transcript:") < prompt.index("Memory:")
+    assert prompt.index("Memory:") < prompt.index("Relevant memory:")
+    assert prompt.index("Relevant memory:") < prompt.index("Current user request:")
     assert prompt.rstrip().endswith("Current user request:\nWhere is the deploy key?")
-    assert metadata["section_order"] == ["prefix", "memory", "skills", "relevant_memory", "history", "current_request"]
+    assert metadata["section_order"] == [
+        "prefix",
+        "skills",
+        "memory_contract",
+        "history",
+        "memory",
+        "relevant_memory",
+        "current_request",
+    ]
+    stable_prefix = prompt[: metadata["prompt_cache_prefix_chars"]]
+    assert "# Auto Memory" in stable_prefix
+    assert "Transcript:" not in stable_prefix
+    assert prompt[metadata["prompt_cache_prefix_chars"] :].startswith(
+        "\n\nTranscript:"
+    )
 
 
 def test_context_manager_build_delegates_metadata_to_report_builder(tmp_path, monkeypatch):
@@ -69,6 +84,8 @@ def test_context_manager_build_delegates_metadata_to_report_builder(tmp_path, mo
         "skills",
         "current_request",
         "context_usage",
+        "prompt_cache_key",
+        "prompt_cache_prefix_chars",
         "pressure",
     ]
 
@@ -141,7 +158,7 @@ def test_context_manager_renders_top_three_episodic_notes_per_note_under_budget(
     assert metadata["relevant_memory"]["rendered_notes"][0].startswith("gamma episodi")
     assert metadata["relevant_memory"]["rendered_notes"][1].startswith("alpha episodi")
     assert metadata["relevant_memory"]["rendered_notes"][2].startswith("beta episodi")
-    relevant_section = prompt.split("Relevant memory:\n", 1)[1].split("\n\nTranscript:", 1)[0]
+    relevant_section = prompt.split("Relevant memory:\n", 1)[1].split("\n\nCurrent user request:", 1)[0]
     assert len([line for line in relevant_section.splitlines() if line.startswith("- ")]) == 3
     assert "alpha episodi" in relevant_section
     assert "beta episodic" in relevant_section
@@ -203,7 +220,7 @@ def test_context_manager_collapses_older_duplicate_reads_into_one_summary_line(t
         )
 
     prompt, metadata = ContextManager(agent).build("check the file")
-    transcript = prompt.split("\n\nTranscript:\n", 1)[1].split("\n\nCurrent user request:", 1)[0]
+    transcript = prompt.split("\n\nTranscript:\n", 1)[1].split("\n\nMemory:", 1)[0]
 
     assert transcript.count("[tool:read_file]") == 0
     assert "sample.txt -> alpha | beta" in transcript
@@ -235,7 +252,7 @@ def test_context_manager_summarizes_older_tool_output_into_one_line(tmp_path):
         )
 
     prompt, metadata = ContextManager(agent).build("check failures")
-    transcript = prompt.split("\n\nTranscript:\n", 1)[1].split("\n\nCurrent user request:", 1)[0]
+    transcript = prompt.split("\n\nTranscript:\n", 1)[1].split("\n\nMemory:", 1)[0]
 
     assert 'pytest -q -> FAIL test_one | FAIL test_two | FAIL test_three' in transcript
     assert "FAIL test_four" not in transcript
@@ -272,7 +289,7 @@ def test_context_manager_relevant_memory_can_mix_durable_notes(tmp_path):
     )
 
     prompt, metadata = ContextManager(agent).build("What conventions should I follow?")
-    relevant_section = prompt.split("Relevant memory:\n", 1)[1].split("\n\nTranscript:", 1)[0]
+    relevant_section = prompt.split("Relevant memory:\n", 1)[1].split("\n\nCurrent user request:", 1)[0]
 
     assert "Use constrained tools instead of guessing." in relevant_section
     assert any("Use constrained tools instead of guessing." in item for item in metadata["relevant_memory"]["selected_notes"])

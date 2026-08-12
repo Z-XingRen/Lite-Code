@@ -13,6 +13,7 @@ from lite.evaluation.real_task_harness import (
     validate_result_matrix,
     write_results,
 )
+from scripts import run_real_task_harness
 from scripts.run_real_task_harness import VARIANT_FLAGS, feature_flags_for_task
 
 
@@ -83,6 +84,77 @@ def test_real_task_variants_isolate_context_and_persistence_effects():
             "journal_checkpoint_policy": True,
         },
     }
+
+
+def test_real_task_identity_locks_runtime_commit_source_and_config(monkeypatch):
+    monkeypatch.setattr(run_real_task_harness, "_git_commit", lambda: "commit-a")
+    monkeypatch.setattr(
+        run_real_task_harness,
+        "_runtime_source_sha256",
+        lambda: "sha256:runtime-a",
+    )
+    monkeypatch.setattr(
+        run_real_task_harness,
+        "_file_sha256",
+        lambda _path: "sha256:config-a",
+    )
+    manifest = {
+        "benchmark_id": "real-task-test",
+        "seed": 7,
+        "tasks": [{"id": "F01_pricing"}],
+    }
+    config = type(
+        "Config",
+        (),
+        {
+            "name": "openai",
+            "protocol": "openai",
+            "model": "gpt-test",
+            "reasoning_effort": "high",
+            "base_url": "https://example.test/v1",
+            "api_key": "secret",
+        },
+    )()
+
+    identity = run_real_task_harness.build_identity(
+        manifest, config, ("baseline",), 3
+    )
+
+    assert identity["schema_version"] == "lite.real_task_identity.v2"
+    assert identity["git_commit"] == "commit-a"
+    assert identity["runtime_source_sha256"] == "sha256:runtime-a"
+    assert identity["config_sha256"] == "sha256:config-a"
+
+    monkeypatch.setattr(
+        run_real_task_harness,
+        "_runtime_source_sha256",
+        lambda: "sha256:runtime-b",
+    )
+    with pytest.raises(RuntimeError, match="changed during evaluation"):
+        run_real_task_harness.assert_identity_unchanged(
+            identity, manifest, config, ("baseline",), 3
+        )
+
+
+def test_runtime_identity_ignores_generated_cache_files(tmp_path, monkeypatch):
+    monkeypatch.setattr(run_real_task_harness, "ROOT", tmp_path)
+    monkeypatch.setattr(
+        run_real_task_harness,
+        "RUNTIME_IDENTITY_PATHS",
+        (Path("lite"),),
+    )
+    source = tmp_path / "lite" / "runtime.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("VALUE = 1\n", encoding="utf-8")
+    before = run_real_task_harness._runtime_source_sha256()
+
+    cache = source.parent / "__pycache__" / "runtime.pyc"
+    cache.parent.mkdir()
+    cache.write_bytes(b"generated")
+    assert run_real_task_harness._runtime_source_sha256() == before
+
+    source.write_text("VALUE = 2\n", encoding="utf-8")
+    assert run_real_task_harness._runtime_source_sha256() != before
 
 
 def test_real_task_results_write_jsonl_and_task_level_markdown(tmp_path):
@@ -164,6 +236,8 @@ def _result_row(variant):
         "changed_paths": ["src/pricing.py"],
         "model_call_count": 2,
         "input_tokens": 100,
+        "cached_tokens": 40,
+        "billable_input_tokens": 60,
         "output_tokens": 20,
         "tool_call_count": 1,
         "duplicate_tool_result_count": 0,

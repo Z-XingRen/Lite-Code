@@ -69,7 +69,15 @@ def test_openai_streams_text_usage_incrementally_and_sets_payload():
                     "type": "response.completed",
                     "response": {
                         "status": "completed",
-                        "usage": {"input_tokens": 4, "output_tokens": 2, "total_tokens": 6},
+                        "usage": {
+                            "input_tokens": 4,
+                            "input_tokens_details": {
+                                "cached_tokens": 2,
+                                "cache_write_tokens": 1,
+                            },
+                            "output_tokens": 2,
+                            "total_tokens": 6,
+                        },
                     },
                 },
             ),
@@ -104,6 +112,8 @@ def test_openai_streams_text_usage_incrementally_and_sets_payload():
     ]
     assert events[-1].stop_reason == "completed"
     assert client.last_completion_metadata["input_tokens"] == 4
+    assert client.last_completion_metadata["cached_tokens"] == 2
+    assert client.last_completion_metadata["cache_write_tokens"] == 1
     assert client.last_completion_metadata["total_tokens"] == 6
     assert captured["payload"]["stream"] is True
     assert captured["headers"]["Accept"] == "text/event-stream"
@@ -112,7 +122,7 @@ def test_openai_streams_text_usage_incrementally_and_sets_payload():
     assert response.readline_calls < len(response._body.splitlines()) + 2
 
 
-def test_openai_gateway_stream_uses_cache_key_and_gpt_5_6_stable_prefix():
+def test_openai_gateway_stream_uses_explicit_gpt_5_6_stable_prefix():
     response = StreamingResponse(
         [
             (
@@ -137,6 +147,7 @@ def test_openai_gateway_stream_uses_cache_key_and_gpt_5_6_stable_prefix():
         api_key="sk-test",
         temperature=None,
         timeout=30,
+        supports_explicit_prompt_cache=True,
     )
     with patch("urllib.request.urlopen", fake_urlopen):
         list(
@@ -158,6 +169,49 @@ def test_openai_gateway_stream_uses_cache_key_and_gpt_5_6_stable_prefix():
             "prompt_cache_breakpoint": {"mode": "explicit"},
         },
         {"type": "input_text", "text": "\n\ndynamic"},
+    ]
+
+
+def test_openai_gpt_5_6_stream_defaults_to_implicit_prompt_cache():
+    response = StreamingResponse(
+        [
+            (
+                "response.completed",
+                {
+                    "type": "response.completed",
+                    "response": {"status": "completed", "output": []},
+                },
+            )
+        ]
+    )
+    captured = {}
+
+    def fake_urlopen(request, timeout):
+        del timeout
+        captured["payload"] = json.loads(request.data.decode("utf-8"))
+        return response
+
+    client = OpenAICompatibleModelClient(
+        model="gpt-5.6-terra",
+        base_url="https://api.openai.com/v1",
+        api_key="sk-test",
+        temperature=None,
+        timeout=30,
+    )
+    with patch("urllib.request.urlopen", fake_urlopen):
+        list(
+            client.stream_result(
+                ModelConversation("stable\n\ndynamic"),
+                100,
+                prompt_cache_key="prefix-hash-123",
+                prompt_cache_prefix_chars=len("stable"),
+            )
+        )
+
+    payload = captured["payload"]
+    assert "prompt_cache_options" not in payload
+    assert payload["input"][0]["content"] == [
+        {"type": "input_text", "text": "stable\n\ndynamic"}
     ]
 
 

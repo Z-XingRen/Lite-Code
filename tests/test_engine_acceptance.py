@@ -124,6 +124,41 @@ def test_engine_reports_context_budget_summary_from_prompt_metadata(tmp_path):
     assert summary["cached_tokens"] == 0
 
 
+def test_engine_backfills_current_provider_usage_into_report(tmp_path):
+    from lite.providers import ModelResult
+
+    agent = build_agent(
+        tmp_path,
+        [
+            ModelResult(
+                text="<final>Done.</final>",
+                metadata={
+                    "input_tokens": 8192,
+                    "output_tokens": 16,
+                    "cached_tokens": 4608,
+                    "cache_write_tokens": 1024,
+                },
+            )
+        ],
+    )
+
+    list(agent.engine.run_turn("summarize context usage"))
+
+    report = json.loads(
+        (agent.current_run_dir / "report.json").read_text(encoding="utf-8")
+    )
+    usage = report["prompt_metadata"]["context_usage"]
+    summary = report["evidence_summaries"]["context_budget_summary"]
+    assert usage["usage_source"] == "actual"
+    assert usage["actual_input_tokens"] == 8192
+    assert usage["cached_tokens"] == 4608
+    assert usage["cache_write_tokens"] == 1024
+    assert summary["provider_usage_available"] is True
+    assert summary["actual_input_tokens"] == 8192
+    assert summary["cached_tokens"] == 4608
+    assert summary["cache_write_tokens"] == 1024
+
+
 def test_engine_records_provider_error_as_failed_run(tmp_path):
     agent = build_agent(
         tmp_path,

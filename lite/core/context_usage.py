@@ -37,7 +37,7 @@ class ContextUsageAnalyzer:
     def __init__(self, agent):
         self.agent = agent
 
-    def analyze(self, rendered):
+    def analyze(self, rendered, *, prompt_cache_key=None):
         tools_chars = native_tool_chars(self.agent)
         sections = {}
         raw_total = 0
@@ -61,7 +61,11 @@ class ContextUsageAnalyzer:
             "provider_base_url": self._provider_base_url(),
             "model": str(getattr(getattr(self.agent, "model_client", None), "model", "")),
             "context_window": window,
-            "prompt_cache_key": str(getattr(getattr(self.agent, "prefix_state", None), "hash", "") or ""),
+            "prompt_cache_key": str(
+                prompt_cache_key
+                or getattr(getattr(self.agent, "prefix_state", None), "hash", "")
+                or ""
+            ),
             "prompt_hash": prompt_hash,
         }
         pressure = ContextPressureController().evaluate(
@@ -117,3 +121,55 @@ class ContextUsageAnalyzer:
             "prompt_cache_key": metadata.get("prompt_cache_key"),
             "prompt_hash": metadata.get("prompt_hash") or usage.get("prompt_hash"),
         }
+
+
+def apply_completion_usage(context_usage, completion_metadata):
+    """Attach current-call provider usage to pre-request context metadata."""
+
+    usage = dict(context_usage or {})
+    completion = dict(completion_metadata or {})
+    try:
+        input_tokens = int(completion["input_tokens"])
+    except (KeyError, TypeError, ValueError):
+        return usage
+
+    cached_tokens = _non_negative_optional_int(completion.get("cached_tokens"))
+    cache_write_tokens = _non_negative_optional_int(
+        completion.get("cache_write_tokens")
+    )
+    budget = max(1, int(usage.get("budget_tokens", 0) or 0))
+    window = max(1, int(usage.get("context_window", 0) or 0))
+    pressure_ratio = round(max(0, input_tokens) / budget, 6)
+    usage.update(
+        {
+            "actual_input_tokens": input_tokens,
+            "last_actual_input_tokens": input_tokens,
+            "usage_source": "actual",
+            "calibration_source": "current_completion",
+            "cached_tokens": cached_tokens,
+            "cache_write_tokens": cache_write_tokens,
+            "pressure_ratio": pressure_ratio,
+            "window_ratio": round(max(0, input_tokens) / window, 6),
+            "pressure_tier": _pressure_tier(pressure_ratio),
+        }
+    )
+    return usage
+
+
+def _non_negative_optional_int(value):
+    if value is None:
+        return None
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _pressure_tier(ratio):
+    if ratio >= 0.95:
+        return "tier3_summary"
+    if ratio >= 0.8:
+        return "tier2_prune"
+    if ratio >= 0.6:
+        return "tier1_snip"
+    return "tier0_observe"

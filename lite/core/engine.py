@@ -10,6 +10,7 @@ from .completion_governance import (
     finish_successful_run,
 )
 from .context_replacements import commit_proposed_replacements
+from .context_usage import apply_completion_usage
 from .model_errors import finish_model_error
 from .model_streaming import consume_model_stream
 from .request_context import finish_request_context_error, rebuild_model_request
@@ -296,7 +297,9 @@ class Engine:
             prompt_cache_prefix_chars = None
             if getattr(agent.model_client, "supports_prompt_cache", False):
                 prompt_cache_key = prompt_metadata.get("prompt_cache_key")
-                prompt_cache_prefix_chars = (
+                prompt_cache_prefix_chars = prompt_metadata.get(
+                    "prompt_cache_prefix_chars"
+                ) or (
                     prompt_metadata.get("sections", {})
                     .get("prefix", {})
                     .get("rendered_chars")
@@ -374,6 +377,9 @@ class Engine:
             )
             if completion_metadata:
                 prompt_metadata.update(completion_metadata)
+            prompt_metadata["context_usage"] = apply_completion_usage(
+                prompt_metadata.get("context_usage"), completion_metadata
+            )
             agent.last_completion_metadata = completion_metadata
             agent.last_prompt_metadata = prompt_metadata
             kind = model_result_kind(result)
@@ -384,6 +390,7 @@ class Engine:
                 {
                     "kind": kind,
                     "completion_metadata": completion_metadata,
+                    "context_usage": prompt_metadata["context_usage"],
                     "duration_ms": duration_ms,
                 },
             )

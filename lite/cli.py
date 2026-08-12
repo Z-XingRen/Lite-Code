@@ -681,6 +681,7 @@ def _format_usage(agent):
         f"last input tokens: {metadata.get('input_tokens', 'unavailable')}",
         f"last output tokens: {metadata.get('output_tokens', 'unavailable')}",
         f"last cached tokens: {metadata.get('cached_tokens', 'unavailable')}",
+        f"last cache write tokens: {metadata.get('cache_write_tokens', 'unavailable')}",
         f"last provider attempts: {metadata.get('provider_attempts', 'unavailable')}",
         f"last provider retry count: {metadata.get('provider_retry_count', 'unavailable')}",
         f"last provider error: {metadata.get('provider_error', 'unavailable')}",
@@ -692,6 +693,10 @@ def _format_usage(agent):
         lines.append(f"context usage source: {context_usage['usage_source']}")
     if context_usage.get("cached_tokens") is not None:
         lines.append(f"context cached tokens: {context_usage['cached_tokens']}")
+    if context_usage.get("cache_write_tokens") is not None:
+        lines.append(
+            f"context cache write tokens: {context_usage['cache_write_tokens']}"
+        )
     orchestrator = dict((getattr(agent, "last_prompt_metadata", {}) or {}).get("context_orchestrator", {}) or {})
     if orchestrator:
         lines.append(f"context orchestrator: {orchestrator.get('version', '-')}")

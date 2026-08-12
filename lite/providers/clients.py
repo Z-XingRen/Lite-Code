@@ -566,11 +566,20 @@ def _extract_usage_cache_details(data):
         or input_details.get("cached_tokens")
         or 0
     )
+    cache_write_tokens = int(
+        usage.get("cache_write_input_tokens")
+        or usage.get("cache_creation_input_tokens")
+        or usage.get("prompt_cache_miss_tokens")
+        or usage.get("cache_write_tokens")
+        or input_details.get("cache_write_tokens")
+        or 0
+    )
     return {
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "total_tokens": usage.get("total_tokens"),
         "cached_tokens": cached_tokens,
+        "cache_write_tokens": cache_write_tokens,
         "cache_hit": cached_tokens > 0,
     }
 
@@ -860,6 +869,7 @@ class OpenAICompatibleModelClient:
         timeout,
         strict_tools=False,
         reasoning_effort="",
+        supports_explicit_prompt_cache=False,
     ):
         self.model = model
         self.base_url = _normalize_versioned_base_url(base_url)
@@ -871,7 +881,9 @@ class OpenAICompatibleModelClient:
         # Gateways can proxy cache-capable models under any host. Cache
         # capability follows the configured protocol, not a URL allowlist.
         self.supports_prompt_cache = True
-        self.supports_explicit_prompt_cache = "gpt-5.6" in self.model.lower()
+        self.supports_explicit_prompt_cache = bool(
+            supports_explicit_prompt_cache
+        ) and "gpt-5.6" in self.model.lower()
         self.last_completion_metadata = {}
         self._http_responses = HttpResponseController()
 

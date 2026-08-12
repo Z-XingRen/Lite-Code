@@ -65,6 +65,7 @@ def test_anthropic_streams_text_and_usage_incrementally():
                             "input_tokens": 4,
                             "output_tokens": 0,
                             "cache_read_input_tokens": 1,
+                            "cache_creation_input_tokens": 2,
                         },
                     },
                 },
@@ -122,6 +123,7 @@ def test_anthropic_streams_text_and_usage_incrementally():
     assert client.last_completion_metadata["input_tokens"] == 4
     assert client.last_completion_metadata["output_tokens"] == 2
     assert client.last_completion_metadata["cached_tokens"] == 1
+    assert client.last_completion_metadata["cache_write_tokens"] == 2
     assert client.last_completion_metadata["cache_hit"] is True
     assert captured["payload"]["stream"] is True
     assert captured["headers"]["Accept"] == "text/event-stream"

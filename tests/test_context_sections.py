@@ -14,24 +14,41 @@ from lite.core.context_manager import ContextManager
 
 
 def test_context_section_policy_registry_preserves_order_and_budget_data():
-    assert SECTION_ORDER == ("prefix", "memory", "skills", "relevant_memory", "history", "current_request")
+    assert SECTION_ORDER == (
+        "prefix",
+        "skills",
+        "memory_contract",
+        "history",
+        "memory",
+        "relevant_memory",
+        "current_request",
+    )
     assert [policy.name for policy in SECTION_POLICIES] == list(SECTION_ORDER)
     assert all(isinstance(policy, ContextSectionPolicy) for policy in SECTION_POLICIES)
     assert DEFAULT_SECTION_BUDGETS == {
         "prefix": 12000,
-        "memory": 8000,
+        "memory_contract": 6000,
+        "memory": 2000,
         "skills": 4000,
         "relevant_memory": 6000,
         "history": 30000,
     }
     assert MIN_SECTION_BUDGETS == {
         "prefix": 4000,
-        "memory": 1200,
+        "memory_contract": 800,
+        "memory": 400,
         "skills": 600,
         "relevant_memory": 1000,
         "history": 6000,
     }
-    assert REDUCTION_ORDER == ("relevant_memory", "skills", "history", "memory", "prefix")
+    assert REDUCTION_ORDER == (
+        "relevant_memory",
+        "skills",
+        "history",
+        "memory",
+        "memory_contract",
+        "prefix",
+    )
     assert section_order() == SECTION_ORDER
     assert section_budgets() == DEFAULT_SECTION_BUDGETS
     assert section_floors() == MIN_SECTION_BUDGETS
@@ -46,8 +63,8 @@ def test_context_section_policy_records_sources_and_non_reducible_request():
         "working_memory",
         "todo_ledger",
         "checkpoint_text",
-        "memory_system_contract",
     )
+    assert policies["memory_contract"].sources == ("memory_system_contract",)
     assert policies["skills"].sources == ("skills",)
     assert policies["relevant_memory"].sources == ("relevant_memory",)
     assert policies["history"].sources == ("history",)
@@ -71,7 +88,8 @@ def test_context_section_policy_records_sources_and_non_reducible_request():
         "skills": 1,
         "history": 2,
         "memory": 3,
-        "prefix": 4,
+        "memory_contract": 4,
+        "prefix": 5,
     }
 
 

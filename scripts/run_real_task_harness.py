@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import random
+import subprocess
 import sys
 from pathlib import Path
 from urllib.parse import urlparse
@@ -47,6 +48,17 @@ VARIANT_FLAGS = {
     },
 }
 COORDINATOR_TOOLS = frozenset({"agent", "send_message", "task_stop"})
+RUNTIME_IDENTITY_IGNORED_PARTS = frozenset(
+    {"__pycache__", ".pytest_cache", ".ruff_cache", ".lite"}
+)
+RUNTIME_IDENTITY_IGNORED_SUFFIXES = frozenset({".pyc", ".pyo", ".tmp", ".temp"})
+RUNTIME_IDENTITY_PATHS = (
+    Path("lite"),
+    Path("scripts/run_real_task_harness.py"),
+    Path("scripts/formal_eval/run_lite_quality_v1.py"),
+    Path("benchmarks/real_tasks_v1.json"),
+    Path("benchmarks/formal_v1"),
+)
 
 
 def feature_flags_for_task(task, variant):
@@ -61,7 +73,7 @@ def feature_flags_for_task(task, variant):
 
 def build_identity(manifest, config, variants, repetitions):
     return {
-        "schema_version": "lite.real_task_identity.v1",
+        "schema_version": "lite.real_task_identity.v2",
         "benchmark_id": manifest["benchmark_id"],
         "seed": int(manifest["seed"]),
         "repetitions": int(repetitions),
@@ -77,7 +89,68 @@ def build_identity(manifest, config, variants, repetitions):
         "reasoning_effort": config.reasoning_effort,
         "base_url_hostname": urlparse(config.base_url).hostname,
         "api_key_present": bool(config.api_key),
+        "git_commit": _git_commit(),
+        "runtime_source_sha256": _runtime_source_sha256(),
+        "config_sha256": _file_sha256(ROOT / ".lite.toml"),
     }
+
+
+def assert_identity_unchanged(expected, manifest, config, variants, repetitions):
+    current = build_identity(manifest, config, variants, repetitions)
+    if current != expected:
+        raise RuntimeError(
+            "real-task runtime or configuration changed during evaluation; "
+            "use a fresh output directory"
+        )
+
+
+def _git_commit():
+    completed = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    return completed.stdout.strip() if completed.returncode == 0 else ""
+
+
+def _runtime_source_sha256():
+    files = set()
+    for relative in RUNTIME_IDENTITY_PATHS:
+        path = ROOT / relative
+        if path.is_file():
+            files.add(path)
+        elif path.is_dir():
+            files.update(
+                item
+                for item in path.rglob("*")
+                if item.is_file() and _is_runtime_identity_file(item)
+            )
+    digest = hashlib.sha256()
+    for path in sorted(files, key=lambda item: item.relative_to(ROOT).as_posix()):
+        relative = path.relative_to(ROOT).as_posix()
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(hashlib.sha256(path.read_bytes()).digest())
+    return "sha256:" + digest.hexdigest()
+
+
+def _is_runtime_identity_file(path):
+    relative = Path(path).relative_to(ROOT)
+    return not (
+        any(part in RUNTIME_IDENTITY_IGNORED_PARTS for part in relative.parts)
+        or path.suffix.lower() in RUNTIME_IDENTITY_IGNORED_SUFFIXES
+    )
+
+
+def _file_sha256(path):
+    path = Path(path)
+    if not path.is_file():
+        return ""
+    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def select_tasks(manifest, task_ids):
@@ -152,12 +225,26 @@ def main(argv=None):
                 key = (task["id"], repeat, variant)
                 if key in completed:
                     continue
+                assert_identity_unchanged(
+                    identity,
+                    {**manifest, "tasks": tasks},
+                    config,
+                    variants,
+                    repetitions,
+                )
                 trial = run_lite_quality_v1.run_trial(
                     task,
                     repeat,
                     output_dir / "work",
                     config,
                     feature_flags=feature_flags_for_task(task, variant),
+                )
+                assert_identity_unchanged(
+                    identity,
+                    {**manifest, "tasks": tasks},
+                    config,
+                    variants,
+                    repetitions,
                 )
                 rows.append(
                     row_from_trial(task, trial, variant=variant, repeat=repeat)

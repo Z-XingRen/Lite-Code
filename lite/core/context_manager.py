@@ -7,6 +7,7 @@ budget evidence but does not mutate session history or compact the conversation.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 
 from ..features import memory as memorylib, skills as skillslib
@@ -104,11 +105,17 @@ class ContextManager:
             relevant_memory_enabled = self.agent.feature_enabled("relevant_memory")
             context_reduction_enabled = self.agent.feature_enabled("context_reduction")
         memory_text = "Memory:\n- disabled" if not memory_enabled else str(self.agent.memory_text())
+        memory_contract = ""
+        if memory_enabled and hasattr(self.agent, "memory_dir"):
+            memory_contract = memorylib.build_memory_system_section(
+                self.agent.memory_dir
+            )
         section_texts = {
             "prefix": str(getattr(self.agent, "prefix", "")),
-            "memory": memory_text,
             "skills": skillslib.render_prompt_section(getattr(self.agent, "skills", {})),
+            "memory_contract": memory_contract,
             "history": "",
+            "memory": memory_text,
             CURRENT_REQUEST_SECTION: f"Current user request:\n{user_message}",
         }
         if hasattr(self.agent, "todo_ledger"):
@@ -118,8 +125,6 @@ class ContextManager:
             checkpoint_text = str(self.agent.render_checkpoint_text() or "").strip()
         if checkpoint_text:
             section_texts["memory"] += "\n\n" + checkpoint_text
-        if memory_enabled and hasattr(self.agent, "memory_dir"):
-            section_texts["memory"] += "\n\n" + memorylib.build_memory_system_section(self.agent.memory_dir)
         selected_notes = []
         if memory_enabled and relevant_memory_enabled and hasattr(self.agent, "memory") and hasattr(self.agent.memory, "retrieval_candidates"):
             include_durable = True
@@ -237,8 +242,10 @@ class ContextManager:
         history_raw = self.history_builder.raw_text(history)
         return {
             "prefix": SectionRender(raw=section_texts["prefix"], budget=len(section_texts["prefix"]), rendered=section_texts["prefix"], details={}),
-            "memory": SectionRender(raw=section_texts["memory"], budget=len(section_texts["memory"]), rendered=section_texts["memory"], details={}),
             "skills": SectionRender(raw=section_texts["skills"], budget=len(section_texts["skills"]), rendered=section_texts["skills"], details={}),
+            "memory_contract": SectionRender(raw=section_texts["memory_contract"], budget=len(section_texts["memory_contract"]), rendered=section_texts["memory_contract"], details={}),
+            "history": SectionRender(raw=history_raw, budget=len(history_raw), rendered=history_raw, details={"rendered_entries": []}),
+            "memory": SectionRender(raw=section_texts["memory"], budget=len(section_texts["memory"]), rendered=section_texts["memory"], details={}),
             "relevant_memory": SectionRender(
                 raw=relevant_raw,
                 budget=len(relevant_raw),
@@ -251,7 +258,6 @@ class ContextManager:
                     "note_budget": 0,
                 },
             ),
-            "history": SectionRender(raw=history_raw, budget=len(history_raw), rendered=history_raw, details={"rendered_entries": []}),
             CURRENT_REQUEST_SECTION: SectionRender(
                 raw=section_texts[CURRENT_REQUEST_SECTION],
                 budget=0,
@@ -399,10 +405,29 @@ class ContextManager:
         )
 
     def _assemble_prompt(self, rendered):
-        # 顺序是刻意设计的：稳定规则放前面，最新请求放最后。
+        # Cacheable rules come first, append-oriented history follows, and
+        # request-dependent memory stays near the current request.
         return "\n\n".join(rendered[section].rendered for section in SECTION_ORDER).strip()
 
+    def _prompt_cache_metadata(self, rendered):
+        stable_sections = SECTION_ORDER[: SECTION_ORDER.index("history")]
+        stable_prefix = "\n\n".join(
+            rendered[section].rendered for section in stable_sections
+        )
+        tool_signature = str(
+            getattr(getattr(self.agent, "prefix_state", None), "tool_signature", "")
+            or ""
+        )
+        cache_key = hashlib.sha256(
+            f"{stable_prefix}\0{tool_signature}".encode("utf-8")
+        ).hexdigest()
+        return {
+            "prompt_cache_key": cache_key,
+            "prompt_cache_prefix_chars": len(stable_prefix),
+        }
+
     def _metadata(self, prompt, rendered, budgets, reduction_log, selected_notes, user_message, section_texts, pressure=None):
+        cache_metadata = self._prompt_cache_metadata(rendered)
         metadata = ContextReportBuilder(
             self.agent,
             total_budget=self.total_budget,
@@ -415,7 +440,9 @@ class ContextManager:
             selected_notes=selected_notes,
             user_message=user_message,
             section_texts=section_texts,
+            prompt_cache_key=cache_metadata["prompt_cache_key"],
         )
+        metadata.update(cache_metadata)
         if pressure:
             metadata["pressure"] = {
                 "ratio": pressure.ratio,

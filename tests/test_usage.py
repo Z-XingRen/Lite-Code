@@ -28,6 +28,7 @@ def test_usage_command_reports_provider_model_and_last_usage(tmp_path):
         "input_tokens": 10,
         "output_tokens": 5,
         "cached_tokens": 3,
+        "cache_write_tokens": 4,
         "provider_attempts": 2,
         "provider_retry_count": 1,
     }
@@ -41,6 +42,7 @@ def test_usage_command_reports_provider_model_and_last_usage(tmp_path):
     assert "last input tokens: 10" in output
     assert "last output tokens: 5" in output
     assert "last cached tokens: 3" in output
+    assert "last cache write tokens: 4" in output
 
 
 def test_usage_command_sanitizes_base_url_host(tmp_path):
@@ -82,6 +84,7 @@ def test_usage_command_optionally_reports_context_pressure_fields(tmp_path):
             "pressure_tier": "medium",
             "usage_source": "estimated",
             "cached_tokens": 128,
+            "cache_write_tokens": 64,
         }
     }
 
@@ -92,6 +95,7 @@ def test_usage_command_optionally_reports_context_pressure_fields(tmp_path):
     assert "context pressure tier: medium" in output
     assert "context usage source: estimated" in output
     assert "context cached tokens: 128" in output
+    assert "context cache write tokens: 64" in output
 
 
 def test_usage_command_optionally_reports_context_orchestrator_fields(tmp_path):

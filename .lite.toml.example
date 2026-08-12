@@ -15,6 +15,7 @@ models = ["gpt-5.4"]
 reasoning_effort = "medium"
 reasoning_efforts = ["none", "low", "medium", "high", "xhigh", "max"]
 strict_tools = false
+supports_explicit_prompt_cache = false
 
 [providers.anthropic]
 protocol = "anthropic"

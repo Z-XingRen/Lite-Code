@@ -17,7 +17,17 @@ class ContextReportBuilder:
     total_budget: int
     reduction_order: tuple[str, ...]
 
-    def build(self, prompt, rendered, budgets, reduction_log, selected_notes, user_message, section_texts):
+    def build(
+        self,
+        prompt,
+        rendered,
+        budgets,
+        reduction_log,
+        selected_notes,
+        user_message,
+        section_texts,
+        prompt_cache_key=None,
+    ):
         section_metadata = {}
         for section in SECTION_ORDER[:-1]:
             section_metadata[section] = {
@@ -51,7 +61,9 @@ class ContextReportBuilder:
                 "rendered_chars": len(user_message),
                 "section_chars": len(rendered[CURRENT_REQUEST_SECTION].rendered),
             },
-            "context_usage": ContextUsageAnalyzer(self.agent).analyze(rendered),
+            "context_usage": ContextUsageAnalyzer(self.agent).analyze(
+                rendered, prompt_cache_key=prompt_cache_key
+            ),
         }
 
     def _relevant_memory_metadata(self, rendered, selected_notes):

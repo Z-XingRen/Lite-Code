@@ -9,6 +9,7 @@ from .final_readiness import reduce_final_readiness_summary
 from .governance import reduce_governance_summary
 from .context_budget_summary import (
     context_budget_summary,
+    update_from_completion,
     update_from_orchestrator,
 )
 from .turn_transitions import reduce_transition_summary
@@ -27,6 +28,10 @@ def update_evidence_summaries(summaries, event, changed_paths=None):
         )
     elif event.get("event") == "context_orchestrator_decision":
         summaries["context_budget_summary"] = update_from_orchestrator(
+            summaries.get("context_budget_summary", {}), event
+        )
+    elif event.get("event") == "model_parsed":
+        summaries["context_budget_summary"] = update_from_completion(
             summaries.get("context_budget_summary", {}), event
         )
     elif event.get("event") == "governance_decision":

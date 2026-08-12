@@ -81,6 +81,15 @@ base_url = "https://api.openai.com/v1"
 model = "your-model"
 ~~~
 
+GPT-5.6 compatible endpoints that forward OpenAI's explicit prompt-cache
+fields can opt in independently of their URL:
+
+~~~toml
+supports_explicit_prompt_cache = true
+~~~
+
+Leave this disabled for gateways that only implement automatic prompt caching.
+
 Anthropic-compatible endpoint 使用同样的结构，只需把 protocol 改为
 anthropic，并填写对应的 base_url 和模型。兼容 Anthropic 协议的其他 provider
 也可以使用 protocol = "anthropic"。

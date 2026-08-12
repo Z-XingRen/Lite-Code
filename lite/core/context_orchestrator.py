@@ -140,7 +140,8 @@ class ContextOrchestrator:
                 "workspace_docs": len(agent.workspace.project_docs),
                 "recent_commits": len(agent.workspace.recent_commits),
                 "prefix_hash": agent.prefix_state.hash,
-                "prompt_cache_key": agent.prefix_state.hash,
+                "prompt_cache_key": metadata.get("prompt_cache_key")
+                or agent.prefix_state.hash,
                 "workspace_fingerprint": agent.prefix_state.workspace_fingerprint,
                 "tool_signature": agent.prefix_state.tool_signature,
                 "workspace_changed": refresh.get("workspace_changed", False),

@@ -66,6 +66,7 @@ def test_provider_config_resolves_model_and_reasoning_picker_values(tmp_path):
                 'models = ["gpt-other", "gpt-current", "gpt-other"]',
                 'reasoning_effort = "HIGH"',
                 'reasoning_efforts = ["low", "high", "LOW"]',
+                'supports_explicit_prompt_cache = true',
             ]
         ),
         encoding="utf-8",
@@ -77,6 +78,7 @@ def test_provider_config_resolves_model_and_reasoning_picker_values(tmp_path):
     assert config.models == ("gpt-other", "gpt-current")
     assert config.reasoning_effort == "high"
     assert config.reasoning_efforts == ("low", "high")
+    assert config.supports_explicit_prompt_cache is True
 
 def test_openai_responses_native_tool_call_and_output_replay():
     captured = []

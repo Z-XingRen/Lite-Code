@@ -82,6 +82,7 @@ def model_client_from_config(config, args, *, timeout=None, client_classes=None)
             timeout=timeout,
             strict_tools=config.strict_tools,
             reasoning_effort=config.reasoning_effort,
+            supports_explicit_prompt_cache=config.supports_explicit_prompt_cache,
         )
     elif config.protocol == "anthropic":
         client = client_classes.anthropic(

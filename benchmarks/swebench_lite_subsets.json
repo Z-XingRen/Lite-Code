@@ -1,0 +1,342 @@
+{
+  "schema_version": "lite.swebench_lite_subsets.v1",
+  "dataset": "SWE-bench/SWE-bench_Lite",
+  "dataset_revision": "2e789fe71d28f983135aee214aee666b3faded59",
+  "subsets": {
+    "dev": {
+      "split": "dev",
+      "source_task_count": 23,
+      "selection_rule": "All official development instances in dataset order.",
+      "tasks": [
+        {
+          "instance_id": "sqlfluff__sqlfluff-1625",
+          "selection_sha256": "aee77b5ad66993681bf25bcbf960e2b998111f83de0db15cdbf7e7d7562caac0"
+        },
+        {
+          "instance_id": "sqlfluff__sqlfluff-2419",
+          "selection_sha256": "23928314562d05f4cb73eee68373de811d135993e128e7162b29a439aa2bf7df"
+        },
+        {
+          "instance_id": "sqlfluff__sqlfluff-1733",
+          "selection_sha256": "089ce9a5d9d5b86f7421b44a413ebfcb7f9128bd81b532e062b6924362b44342"
+        },
+        {
+          "instance_id": "sqlfluff__sqlfluff-1517",
+          "selection_sha256": "949723cf6f204ade5d35f2352b8eca6a47396d912b4757a387bd3b21531bfd7c"
+        },
+        {
+          "instance_id": "sqlfluff__sqlfluff-1763",
+          "selection_sha256": "8ec68a2a5ca4459f72db6424bd0c1e7ea1e26e5d03e578ecf0ea59d00473a4a5"
+        },
+        {
+          "instance_id": "marshmallow-code__marshmallow-1359",
+          "selection_sha256": "1ddd1b986ac6044d223b53886f98dbfd28eafee8b965292f81db6ec651451910"
+        },
+        {
+          "instance_id": "marshmallow-code__marshmallow-1343",
+          "selection_sha256": "99d0cb19f1ed0e110ec9c935025245ba895edf6a6f19855007534846c4fd9290"
+        },
+        {
+          "instance_id": "pvlib__pvlib-python-1707",
+          "selection_sha256": "a33f61b387365e26ddbad14003ec80dd9bfc930165975fb0c73db8d0d83e483d"
+        },
+        {
+          "instance_id": "pvlib__pvlib-python-1072",
+          "selection_sha256": "801f9d0bce5d8b842355516d4bed78a582a69833319380c0a31a21b619c22272"
+        },
+        {
+          "instance_id": "pvlib__pvlib-python-1606",
+          "selection_sha256": "3be4c57f5cb8506e604305483485a32709a9d07797739095192780eb6f6b6115"
+        },
+        {
+          "instance_id": "pvlib__pvlib-python-1854",
+          "selection_sha256": "8658666a8fd503691ef790b604da03a048005e3630c2e2f11eac5812389d6bf8"
+        },
+        {
+          "instance_id": "pvlib__pvlib-python-1154",
+          "selection_sha256": "250d0a13fa8c85271ac11b953c0db110655badbbd96f555a2dbcaeac94a59573"
+        },
+        {
+          "instance_id": "pylint-dev__astroid-1978",
+          "selection_sha256": "396637094b0900764be0a28aee4847c4e76b0e3416f36dbd5d6e19400668c1cd"
+        },
+        {
+          "instance_id": "pylint-dev__astroid-1333",
+          "selection_sha256": "7428b66b7976ceb9fb82d9feffac517d007b5afb046cfdd54a0607362148a3f0"
+        },
+        {
+          "instance_id": "pylint-dev__astroid-1196",
+          "selection_sha256": "83374b92d45317ffaf552237aac2714f5941d7f6cfed4a22be0b550021f2dc39"
+        },
+        {
+          "instance_id": "pylint-dev__astroid-1866",
+          "selection_sha256": "ef0703e77f17b98d446355c5285bbe50ff06c09c546996b9f95ce4df737e712a"
+        },
+        {
+          "instance_id": "pylint-dev__astroid-1268",
+          "selection_sha256": "ec35d5f6e0d57afb83e28fd5df1c5385440e277779d4e7337c30dc10d67154ac"
+        },
+        {
+          "instance_id": "pyvista__pyvista-4315",
+          "selection_sha256": "1c95d07a3621219773c86f43badb6aeb0dc1b62cfc1b2fd6e87bbe838cd53eb9"
+        },
+        {
+          "instance_id": "pydicom__pydicom-1694",
+          "selection_sha256": "db74381a2a02e9d203325b37859f6556a2324cef7ae76b824166a6eef1dc6204"
+        },
+        {
+          "instance_id": "pydicom__pydicom-1413",
+          "selection_sha256": "e3be7cc76403eaa312531a5363fe056c8e396204e3cbf27f4af4d6708b0d264c"
+        },
+        {
+          "instance_id": "pydicom__pydicom-901",
+          "selection_sha256": "bd6fa6d4c61adba3d974554c44dace2b00a6e29e7a35ac8095c82d24a54eb64c"
+        },
+        {
+          "instance_id": "pydicom__pydicom-1139",
+          "selection_sha256": "94d7e37e9e99ba782b606396e5dda39bc4eac33b1e4bf53c28e0996c52df7bbc"
+        },
+        {
+          "instance_id": "pydicom__pydicom-1256",
+          "selection_sha256": "50316d1afa92b0e4f4bca25ed73efe4629cee209cbee7bad9720a619dd958a75"
+        }
+      ]
+    },
+    "smoke-5": {
+      "split": "dev",
+      "source_task_count": 23,
+      "seed": "lite-swebench-lite-dev-smoke-5-20260810",
+      "selection_rule": "Sort by SHA-256(seed + NUL + instance_id), cap each repository at one, and take five.",
+      "tasks": [
+        {
+          "instance_id": "pylint-dev__astroid-1978",
+          "selection_sha256": "01c8569d17c7a8c1b278195ad5d302a114f4be362deed2542b22205f6070b8de"
+        },
+        {
+          "instance_id": "sqlfluff__sqlfluff-1763",
+          "selection_sha256": "03fa67f7e2e0a86bc7909eb66293340d88dbf0129b6ada516a76d01f7c3d6f88"
+        },
+        {
+          "instance_id": "pvlib__pvlib-python-1606",
+          "selection_sha256": "08fef90e0f1d1e45e5dee37b2f1c906ae87d98041662fc05a6bef411fabb89c1"
+        },
+        {
+          "instance_id": "pydicom__pydicom-901",
+          "selection_sha256": "09d05a05f0a43a9a739335dba708579c69f1d5f515df47a25d3b63453ff6b9be"
+        },
+        {
+          "instance_id": "pyvista__pyvista-4315",
+          "selection_sha256": "448bb02ae5f0ffe2e301512d2c9512d937e38c761c8e3b0e1642b535fdc6c54d"
+        }
+      ]
+    },
+    "calibration-50": {
+      "split": "test",
+      "source_task_count": 300,
+      "seed": "lite-swebench-lite-calibration-50-20260810",
+      "selection_rule": "Sort by SHA-256(seed + NUL + instance_id), cap each repository at five, and take 50.",
+      "tasks": [
+        {
+          "instance_id": "sympy__sympy-20212",
+          "selection_sha256": "01568a7333749f68c68ddaff27bd48516369f6432752da72cd2e67ec07ead78c"
+        },
+        {
+          "instance_id": "django__django-14016",
+          "selection_sha256": "017a4ffe9a623172fa6eda7216f477aa1c2620f63ad75ed27a7cefad18f2c095"
+        },
+        {
+          "instance_id": "sphinx-doc__sphinx-8282",
+          "selection_sha256": "01f2b28f4e8c97bbd5d9a2875b8e895f49136d6bb7f4312aded3008e5d6c87a3"
+        },
+        {
+          "instance_id": "django__django-13230",
+          "selection_sha256": "0271a6477b5d4584cd59a8130aa4b84c80b3342040c3dff464dd925ce17e0a40"
+        },
+        {
+          "instance_id": "sympy__sympy-22005",
+          "selection_sha256": "058496bf05a17a6240a0b821d89f61ab944b2f5a30e47aa8390019689ec62224"
+        },
+        {
+          "instance_id": "sympy__sympy-24909",
+          "selection_sha256": "05d782abe89004ab1b89309621ac5dffa9499da7d2f4736fb73611694e0633f6"
+        },
+        {
+          "instance_id": "sphinx-doc__sphinx-10451",
+          "selection_sha256": "07a06d8e257b01c87f0ad84f1588d20d3889c71e801e37a70f28d4aa2e3b6af1"
+        },
+        {
+          "instance_id": "django__django-14155",
+          "selection_sha256": "081162f38f3631296fe273d8888fbe3b3bf18a2d61098cd2ef99338027d86404"
+        },
+        {
+          "instance_id": "sympy__sympy-13647",
+          "selection_sha256": "092fde5d92b6bb5b8e41e5d62d5069bf3269f0b4d36319739a7e6c6e889d6a97"
+        },
+        {
+          "instance_id": "sympy__sympy-15678",
+          "selection_sha256": "097d72331090ce75975861a2ed4bde12bc51446efa940cba0e41e68e6aa1fb0b"
+        },
+        {
+          "instance_id": "django__django-12125",
+          "selection_sha256": "09c1a19b524361e99c46cab7365ebdb85ae1656414cc815d24cf20f162bc95f9"
+        },
+        {
+          "instance_id": "django__django-15388",
+          "selection_sha256": "0ad669304a4ea1b229855f7710842a7880ff4b6f0e407f117974f21d24d569ab"
+        },
+        {
+          "instance_id": "pytest-dev__pytest-7168",
+          "selection_sha256": "0bcb59058fe806e3f3f1d2a0b685f863c9c8c6ee059442c98da41b2ab6995ce3"
+        },
+        {
+          "instance_id": "matplotlib__matplotlib-23987",
+          "selection_sha256": "0d56ebc109d14dab69fb42220a0153f2dde4aa12d812ea5d73bc74d5e903b74b"
+        },
+        {
+          "instance_id": "astropy__astropy-6938",
+          "selection_sha256": "0dc556b960d341e5fe804b116b49d343622db36a8959f66d009c6370600e8ea7"
+        },
+        {
+          "instance_id": "matplotlib__matplotlib-23913",
+          "selection_sha256": "1099cac547ddd37732b856bc3687b247a2d6986fc9ab0ee15d93c2b71ab7f915"
+        },
+        {
+          "instance_id": "scikit-learn__scikit-learn-13584",
+          "selection_sha256": "1131ba98459e0f983ee254992d3c1d146ccc5e1210f44ba847d3891863128c26"
+        },
+        {
+          "instance_id": "sphinx-doc__sphinx-8721",
+          "selection_sha256": "139e4d13b8d2de3c7935bcd03f7bd72db74764dc3c2d039ecbf742f2b16b2411"
+        },
+        {
+          "instance_id": "scikit-learn__scikit-learn-13241",
+          "selection_sha256": "13bf2a9b0a8aad3a8dbb341ba5872ca65529d5d86c00f6db3022cbd54df845e1"
+        },
+        {
+          "instance_id": "sphinx-doc__sphinx-10325",
+          "selection_sha256": "15a2dbde1a4491b8657411c63370f6791dbda28c358f7ed491fa97a79dd30c71"
+        },
+        {
+          "instance_id": "scikit-learn__scikit-learn-10508",
+          "selection_sha256": "172bcc4dc74922d155fa9935da521ae7e271cca8cc6f54cd4f1a27b9d8662c7f"
+        },
+        {
+          "instance_id": "pytest-dev__pytest-7490",
+          "selection_sha256": "19cc6caecd8484911c0661cc32e666ef26fde8c0852cd809c621d725913c29ba"
+        },
+        {
+          "instance_id": "matplotlib__matplotlib-23563",
+          "selection_sha256": "1a80fb66b9890b58ce1760b45dccdd029432666eb5db5b057d8e675df8cbdac8"
+        },
+        {
+          "instance_id": "psf__requests-2148",
+          "selection_sha256": "1f331d96208078f43ab7b5603d2aa78683256307a4efc709197073245ca67e09"
+        },
+        {
+          "instance_id": "scikit-learn__scikit-learn-12471",
+          "selection_sha256": "1ff21859c2945840297a0b2323f430e5297b6222e241e34a7f74bfd63931e429"
+        },
+        {
+          "instance_id": "sphinx-doc__sphinx-8273",
+          "selection_sha256": "20df97c36ddfa12032ded06a78b7ad7b81981464bd0a01c30d750822b9a73170"
+        },
+        {
+          "instance_id": "astropy__astropy-7746",
+          "selection_sha256": "2523001cfb41cbbdc3b69c361e31bf3b08d8d769fb3ad72a282e56716d5dacb1"
+        },
+        {
+          "instance_id": "matplotlib__matplotlib-24334",
+          "selection_sha256": "263edeb63f8763ed6bde371f8cfe106dea577f2e90e57e965a1fb24b4808ff1b"
+        },
+        {
+          "instance_id": "scikit-learn__scikit-learn-11281",
+          "selection_sha256": "2b9b28cf92a5cf1e5a3337e8282c0200e146fa738a003fce056d7ea72a56edee"
+        },
+        {
+          "instance_id": "pytest-dev__pytest-5221",
+          "selection_sha256": "2dccffdbcbeceb02f46051ec8f624193a6c701e671265321b8a0c2a0112fc8b7"
+        },
+        {
+          "instance_id": "pytest-dev__pytest-6116",
+          "selection_sha256": "3092bb5e30766864575bc4cb4b4f4e27cde50cd42edc7a4f9ff881b92c138ccf"
+        },
+        {
+          "instance_id": "pytest-dev__pytest-7373",
+          "selection_sha256": "30b894ad77be2bcd78cf1d4dcd527940c84101b4d7c92897ef55e1b6034927a6"
+        },
+        {
+          "instance_id": "astropy__astropy-14182",
+          "selection_sha256": "318051762d8c1eda10e7a12ac7ed6f594651c2829eef73e00e524ec50497b53f"
+        },
+        {
+          "instance_id": "matplotlib__matplotlib-24149",
+          "selection_sha256": "32345d29ba68f7838414d3b859d157568f4153fbb7ac3f1ce6beac406d6760a7"
+        },
+        {
+          "instance_id": "astropy__astropy-14365",
+          "selection_sha256": "3481628c702912515bb279148adfcd22fca81e3e4306953ae61f2297aed5badf"
+        },
+        {
+          "instance_id": "pylint-dev__pylint-7080",
+          "selection_sha256": "443272d09313f650946d1df33ec8cb362c8d6e0532d1d210e9a6b187b0a63cbb"
+        },
+        {
+          "instance_id": "psf__requests-3362",
+          "selection_sha256": "510ec9c07f2bf4d4114a1413181bc414691e768b95681dda13956d1159b0cc2f"
+        },
+        {
+          "instance_id": "pydata__xarray-4094",
+          "selection_sha256": "55b6b3f29185b509c20d6b9cdc6763714b3e27290960cf527a6ad2b72c37b176"
+        },
+        {
+          "instance_id": "mwaskom__seaborn-3190",
+          "selection_sha256": "578793321b527e6e4b15617034045bf8f5eea282e1bdcb18baa07edc0d1a323a"
+        },
+        {
+          "instance_id": "astropy__astropy-14995",
+          "selection_sha256": "59380809a3a76c7898a41e98c52659b5a5940d8d94a0966d879d41716f48ce0d"
+        },
+        {
+          "instance_id": "pydata__xarray-3364",
+          "selection_sha256": "673a965c953c4af1a30ea3a750cd3155a34d4720bc594df1fa4756bbd7bda0c3"
+        },
+        {
+          "instance_id": "psf__requests-863",
+          "selection_sha256": "7816a980713a84ed2a4d9d6f7b4e1e1df507e777614dc47724791884c19deb2b"
+        },
+        {
+          "instance_id": "pydata__xarray-5131",
+          "selection_sha256": "861cfbe7cba6f0ab553fc7efd86ea7c8bfe7f99d4538815337990a723928b505"
+        },
+        {
+          "instance_id": "pallets__flask-5063",
+          "selection_sha256": "884ef13c69b6117e1b91a3ac12b6d7d8842bed7dccb8cce32b67b4920d53889f"
+        },
+        {
+          "instance_id": "psf__requests-2317",
+          "selection_sha256": "8a6ebd9aa02d0230b5dedf035c5fd1c705c1cb19c41b86e00fa56f04fdbc1805"
+        },
+        {
+          "instance_id": "mwaskom__seaborn-3010",
+          "selection_sha256": "a5d4b4908cb930828e25434921b8393590963d6d386f4027516d310449477d9b"
+        },
+        {
+          "instance_id": "pylint-dev__pylint-7228",
+          "selection_sha256": "a7664294ae0c6b144e368fbfc0272ef93f6fab20009c4287bd2a309c4e4587d6"
+        },
+        {
+          "instance_id": "pylint-dev__pylint-7114",
+          "selection_sha256": "a87bf0b90e2edee8989722e9c141caa93b43ef29ea1b1fa6559de54f26473c7e"
+        },
+        {
+          "instance_id": "pydata__xarray-4248",
+          "selection_sha256": "b4c6649d57167db943c232a3979e9f2fc9baab523b6f4a2face7769758dce8a7"
+        },
+        {
+          "instance_id": "psf__requests-1963",
+          "selection_sha256": "bb11c332f57892092cb60d11bfab676d165535e1bd30e00fc0949c18ba5ca0b8"
+        }
+      ]
+    }
+  }
+}

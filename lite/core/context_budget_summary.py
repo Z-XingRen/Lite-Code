@@ -78,6 +78,27 @@ def update_from_orchestrator(summary, event):
     return summary
 
 
+def update_from_completion(summary, event):
+    summary = dict(summary or {})
+    usage = dict(event.get("context_usage", {}) or {})
+    completion = dict(event.get("completion_metadata", {}) or {})
+    summary.update(
+        {
+            "pressure_tier": usage.get("pressure_tier", ""),
+            "pressure_ratio": float(usage.get("pressure_ratio", 0) or 0),
+            "usage_source": usage.get("usage_source", ""),
+            "provider_usage_available": usage.get("actual_input_tokens")
+            is not None,
+            "actual_input_tokens": usage.get("actual_input_tokens"),
+            "cached_tokens": int(completion.get("cached_tokens", 0) or 0),
+            "cache_write_tokens": int(
+                completion.get("cache_write_tokens", 0) or 0
+            ),
+        }
+    )
+    return summary
+
+
 def _compact_call_usage(orchestrator):
     usage = orchestrator.get("compact_call_usage")
     return dict(usage) if isinstance(usage, dict) else None

@@ -378,7 +378,10 @@ def test_openai_compatible_client_sends_prompt_cache_fields_and_records_usage():
                     "output_text": "<final>ok</final>",
                     "usage": {
                         "input_tokens": 2048,
-                        "input_tokens_details": {"cached_tokens": 1536},
+                        "input_tokens_details": {
+                            "cached_tokens": 1536,
+                            "cache_write_tokens": 256,
+                        },
                         "output_tokens": 32,
                         "total_tokens": 2080,
                     },
@@ -413,12 +416,13 @@ def test_openai_compatible_client_sends_prompt_cache_fields_and_records_usage():
     assert captured["body"]["prompt_cache_retention"] == "in_memory"
     assert client.last_completion_metadata["prompt_cache_supported"] is True
     assert client.last_completion_metadata["cached_tokens"] == 1536
+    assert client.last_completion_metadata["cache_write_tokens"] == 256
     assert client.last_completion_metadata["cache_hit"] is True
     assert client.last_completion_metadata["input_tokens"] == 2048
     assert client.last_completion_metadata["provider_attempts"] == 1
 
 
-def test_openai_gateway_uses_cache_key_and_gpt_5_6_stable_prefix():
+def test_openai_gateway_uses_explicit_gpt_5_6_stable_prefix():
     captured = {}
 
     class FakeResponse:
@@ -444,6 +448,7 @@ def test_openai_gateway_uses_cache_key_and_gpt_5_6_stable_prefix():
         api_key="sk-test",
         temperature=None,
         timeout=30,
+        supports_explicit_prompt_cache=True,
     )
 
     with patch("urllib.request.urlopen", fake_urlopen):
@@ -464,6 +469,48 @@ def test_openai_gateway_uses_cache_key_and_gpt_5_6_stable_prefix():
             "prompt_cache_breakpoint": {"mode": "explicit"},
         },
         {"type": "input_text", "text": "\n\ndynamic request"},
+    ]
+
+
+def test_openai_gpt_5_6_defaults_to_implicit_prompt_cache():
+    captured = {}
+
+    class FakeResponse:
+        headers = {"Content-Type": "application/json"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps({"output_text": "ok"}).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        del timeout
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        return FakeResponse()
+
+    client = OpenAICompatibleModelClient(
+        model="gpt-5.6-terra",
+        base_url="https://api.openai.com/v1",
+        api_key="sk-test",
+        temperature=None,
+        timeout=30,
+    )
+
+    with patch("urllib.request.urlopen", fake_urlopen):
+        client.complete(
+            "stable prefix\n\ndynamic request",
+            42,
+            prompt_cache_key="prefix-hash-123",
+            prompt_cache_prefix_chars=len("stable prefix"),
+        )
+
+    assert "prompt_cache_options" not in captured["body"]
+    assert captured["body"]["input"][0]["content"] == [
+        {"type": "input_text", "text": "stable prefix\n\ndynamic request"}
     ]
 
 
@@ -934,6 +981,7 @@ def test_build_agent_project_profile_beats_project_env_for_model(tmp_path):
                 'models = ["other-model"]',
                 'reasoning_effort = "high"',
                 'reasoning_efforts = ["low", "high"]',
+                'supports_explicit_prompt_cache = true',
             ]
         )
         + "\n",
@@ -948,6 +996,7 @@ def test_build_agent_project_profile_beats_project_env_for_model(tmp_path):
 
     assert mock_openai.call_args.kwargs["model"] == "profile-model"
     assert mock_openai.call_args.kwargs["reasoning_effort"] == "high"
+    assert mock_openai.call_args.kwargs["supports_explicit_prompt_cache"] is True
     client = mock_openai.return_value
     assert client.available_models == ("other-model", "profile-model")
     assert client.available_reasoning_efforts == ("low", "high")
@@ -2079,7 +2128,10 @@ def test_agent_records_model_cache_metadata_in_last_prompt_metadata(tmp_path):
     assert agent.last_prompt_metadata["cached_tokens"] == 512
     assert agent.last_prompt_metadata["cache_hit"] is True
     assert agent.last_prompt_metadata["prefix_hash"]
-    assert agent.last_prompt_metadata["prompt_cache_key"] == agent.last_prompt_metadata["prefix_hash"]
+    assert agent.last_prompt_metadata["prompt_cache_key"]
+    assert agent.last_prompt_metadata["prompt_cache_key"] != agent.last_prompt_metadata["prefix_hash"]
+    assert agent.last_prompt_metadata["context_usage"]["usage_source"] == "actual"
+    assert agent.last_prompt_metadata["context_usage"]["cached_tokens"] == 512
 
 
 def test_agent_passes_stable_prefix_cache_metadata_to_any_capable_provider(tmp_path):
@@ -2105,10 +2157,9 @@ def test_agent_passes_stable_prefix_cache_metadata_to_any_capable_provider(tmp_p
 
     assert agent.ask("Cache this stable prefix") == "Done."
 
-    assert client.cache_kwargs["prompt_cache_key"] == agent.prefix_state.hash
-    assert client.cache_kwargs["prompt_cache_prefix_chars"] == (
-        agent.last_prompt_metadata["sections"]["prefix"]["rendered_chars"]
-    )
+    assert client.cache_kwargs["prompt_cache_key"] == agent.last_prompt_metadata["prompt_cache_key"]
+    assert client.cache_kwargs["prompt_cache_prefix_chars"] == agent.last_prompt_metadata["prompt_cache_prefix_chars"]
+    assert client.cache_kwargs["prompt_cache_prefix_chars"] > len(agent.prefix)
     assert client.cache_kwargs["prompt_cache_retention"] is None
 
 

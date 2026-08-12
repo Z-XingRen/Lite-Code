@@ -39,6 +39,7 @@ class ProviderConfig:
     models: tuple[str, ...] = ()
     reasoning_effort: str = ""
     reasoning_efforts: tuple[str, ...] = ()
+    supports_explicit_prompt_cache: bool = False
 
 
 PROVIDER_DEFAULTS: dict[str, dict[str, Any]] = {
@@ -318,6 +319,13 @@ def resolve_provider_config(
         default_values.get("vision_provider"),
         "",
     )
+    supports_explicit_prompt_cache = _bool_value(
+        _first_present(
+            profile_values.get("supports_explicit_prompt_cache"),
+            default_values.get("supports_explicit_prompt_cache"),
+            False,
+        )
+    )
 
     return ProviderConfig(
         name=provider_name,
@@ -336,6 +344,7 @@ def resolve_provider_config(
             "reasoning_efforts",
             normalize=str.lower,
         ),
+        supports_explicit_prompt_cache=supports_explicit_prompt_cache,
     )
 
 

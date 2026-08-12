@@ -18,6 +18,8 @@ METRIC_FIELDS = (
     "changed_paths",
     "model_call_count",
     "input_tokens",
+    "cached_tokens",
+    "billable_input_tokens",
     "output_tokens",
     "tool_call_count",
     "duplicate_tool_result_count",
@@ -57,6 +59,8 @@ def row_from_trial(task, trial, *, variant, repeat):
     events = evidence.trace_events
     usage = dict(trial.get("usage", {}) or {})
     model_calls = int(usage.get("model_call_count", 0) or 0)
+    input_tokens = int(usage.get("input_tokens", 0) or 0)
+    cached_tokens = int(usage.get("cached_tokens", 0) or 0)
     if not model_calls:
         model_calls = sum(event.get("event") == "model_requested" for event in events)
     persistence_writes = max(
@@ -74,7 +78,9 @@ def row_from_trial(task, trial, *, variant, repeat):
         "scope_violation": not bool(trial.get("scope_pass")),
         "changed_paths": list(trial.get("changed_paths", []) or []),
         "model_call_count": model_calls,
-        "input_tokens": int(usage.get("input_tokens", 0) or 0),
+        "input_tokens": input_tokens,
+        "cached_tokens": cached_tokens,
+        "billable_input_tokens": max(0, input_tokens - cached_tokens),
         "output_tokens": int(usage.get("output_tokens", 0) or 0),
         "tool_call_count": sum(
             event.get("event") == "tool_executed" for event in events

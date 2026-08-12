@@ -15,12 +15,28 @@ class ContextSectionPolicy:
     protected: bool
 
 
-SECTION_ORDER = ("prefix", "memory", "skills", "relevant_memory", "history", "current_request")
-REDUCTION_ORDER = ("relevant_memory", "skills", "history", "memory", "prefix")
+SECTION_ORDER = (
+    "prefix",
+    "skills",
+    "memory_contract",
+    "history",
+    "memory",
+    "relevant_memory",
+    "current_request",
+)
+REDUCTION_ORDER = (
+    "relevant_memory",
+    "skills",
+    "history",
+    "memory",
+    "memory_contract",
+    "prefix",
+)
 
 SECTION_RATIOS = {
     "prefix": 0.20,
-    "memory": 0.13,
+    "memory_contract": 0.09,
+    "memory": 0.04,
     "skills": 0.07,
     "relevant_memory": 0.10,
     "history": 0.50,
@@ -28,7 +44,8 @@ SECTION_RATIOS = {
 
 MIN_SECTION_BUDGETS = {
     "prefix": 4000,
-    "memory": 1200,
+    "memory_contract": 800,
+    "memory": 400,
     "skills": 600,
     "relevant_memory": 1000,
     "history": 6000,
@@ -36,7 +53,8 @@ MIN_SECTION_BUDGETS = {
 
 DEFAULT_SECTION_BUDGETS = {
     "prefix": 12000,
-    "memory": 8000,
+    "memory_contract": 6000,
+    "memory": 2000,
     "skills": 4000,
     "relevant_memory": 6000,
     "history": 30000,
@@ -106,14 +124,6 @@ SECTION_POLICIES = (
         protected=False,
     ),
     ContextSectionPolicy(
-        name="memory",
-        budget_chars=DEFAULT_SECTION_BUDGETS["memory"],
-        floor_chars=MIN_SECTION_BUDGETS["memory"],
-        reduction_rank=_REDUCTION_RANKS["memory"],
-        sources=("working_memory", "todo_ledger", "checkpoint_text", "memory_system_contract"),
-        protected=True,
-    ),
-    ContextSectionPolicy(
         name="skills",
         budget_chars=DEFAULT_SECTION_BUDGETS["skills"],
         floor_chars=MIN_SECTION_BUDGETS["skills"],
@@ -122,11 +132,11 @@ SECTION_POLICIES = (
         protected=False,
     ),
     ContextSectionPolicy(
-        name="relevant_memory",
-        budget_chars=DEFAULT_SECTION_BUDGETS["relevant_memory"],
-        floor_chars=MIN_SECTION_BUDGETS["relevant_memory"],
-        reduction_rank=_REDUCTION_RANKS["relevant_memory"],
-        sources=("relevant_memory",),
+        name="memory_contract",
+        budget_chars=DEFAULT_SECTION_BUDGETS["memory_contract"],
+        floor_chars=MIN_SECTION_BUDGETS["memory_contract"],
+        reduction_rank=_REDUCTION_RANKS["memory_contract"],
+        sources=("memory_system_contract",),
         protected=True,
     ),
     ContextSectionPolicy(
@@ -135,6 +145,22 @@ SECTION_POLICIES = (
         floor_chars=MIN_SECTION_BUDGETS["history"],
         reduction_rank=_REDUCTION_RANKS["history"],
         sources=("history",),
+        protected=True,
+    ),
+    ContextSectionPolicy(
+        name="memory",
+        budget_chars=DEFAULT_SECTION_BUDGETS["memory"],
+        floor_chars=MIN_SECTION_BUDGETS["memory"],
+        reduction_rank=_REDUCTION_RANKS["memory"],
+        sources=("working_memory", "todo_ledger", "checkpoint_text"),
+        protected=True,
+    ),
+    ContextSectionPolicy(
+        name="relevant_memory",
+        budget_chars=DEFAULT_SECTION_BUDGETS["relevant_memory"],
+        floor_chars=MIN_SECTION_BUDGETS["relevant_memory"],
+        reduction_rank=_REDUCTION_RANKS["relevant_memory"],
+        sources=("relevant_memory",),
         protected=True,
     ),
     ContextSectionPolicy(
