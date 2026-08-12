@@ -7,12 +7,18 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
+from urllib.parse import urlparse
 
 from lite import Lite, SessionStore, WorkspaceContext
-from lite.config import resolve_provider_config
+from lite.config import load_project_env, resolve_provider_config
 from lite.core.run_store import RunStore
 from lite.evaluation.context_cost import _usage_from_trace
 from lite.providers import OpenAICompatibleModelClient
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python 3.10 dependency
+    import tomli as tomllib
 
 ROOT = Path(__file__).resolve().parents[2]
 DATA = ROOT / "benchmarks/external/longmemeval/data/longmemeval_oracle.json"
@@ -28,12 +34,19 @@ TYPE_QUOTAS = {
 }
 
 
+def configured_temperature(config):
+    with (ROOT / ".lite.toml").open("rb") as handle:
+        payload = tomllib.load(handle)
+    profile = payload.get("providers", {}).get(config.name, {})
+    return profile.get("temperature") if isinstance(profile, dict) else None
+
+
 def client(config, *, timeout=300):
     return OpenAICompatibleModelClient(
         model=config.model,
         base_url=config.base_url,
         api_key=config.api_key,
-        temperature=0.0,
+        temperature=configured_temperature(config),
         timeout=timeout,
         strict_tools=config.strict_tools,
         reasoning_effort=config.reasoning_effort,
@@ -161,11 +174,15 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-dir", default=str(OUT))
     args = parser.parse_args()
+    load_project_env(ROOT, override=True)
     config = resolve_provider_config(
-        "openai", start=ROOT, config_path=ROOT / ".lite.toml"
+        None, start=ROOT, config_path=ROOT / ".lite.toml"
     )
-    if config.model != "gpt-5.5" or not config.api_key:
-        raise RuntimeError("LongMemEval requires configured gpt-5.5")
+    if config.protocol != "openai" or not config.api_key:
+        raise RuntimeError(
+            "LongMemEval requires an OpenAI-compatible provider and API key "
+            "resolved from .lite.toml"
+        )
     data = json.loads(DATA.read_text(encoding="utf-8"))
     selected = select_samples(data)
     if len(selected) != 50:
@@ -240,10 +257,15 @@ def main():
         "actual_usage_rows": sum(bool(r["usage"]["actual"]) for r in rows),
         "by_type": by_type,
         "model": {
+            "source": str(ROOT / ".lite.toml"),
             "provider": config.name,
+            "protocol": config.protocol,
             "model": config.model,
             "reasoning_effort": config.reasoning_effort,
             "strict_tools": config.strict_tools,
+            "temperature": configured_temperature(config),
+            "base_url_hostname": urlparse(config.base_url).hostname,
+            "api_key_present": bool(config.api_key),
         },
         "judge_model": config.model,
         "judge_prompt_provenance": "adapted from official LongMemEval src/evaluation/evaluate_qa.py",

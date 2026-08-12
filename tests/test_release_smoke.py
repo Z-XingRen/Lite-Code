@@ -11,11 +11,16 @@ Set LITE_LIVE_SMOKE=1 with a provider configured to run them against a real mode
 """
 import os
 import textwrap
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from lite import Lite, SessionStore, WorkspaceContext
 from lite.testing import ScriptedModelClient
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _build_workspace(tmp_path):
@@ -117,35 +122,37 @@ def test_empty_response_does_not_silently_stop(tmp_path):
     assert not final.startswith("Stopped after")
 
 
-def _has_live_provider():
-    keys = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "DEEPSEEK_API_KEY")
-    return any(os.environ.get(k) for k in keys) and os.environ.get("LITE_LIVE_SMOKE") == "1"
+def _live_smoke_enabled():
+    return os.environ.get("LITE_LIVE_SMOKE") == "1"
 
 
 @pytest.mark.skipif(
-    not _has_live_provider(),
-    reason="set LITE_LIVE_SMOKE=1 and a provider API key to run against a real model",
+    not _live_smoke_enabled(),
+    reason="set LITE_LIVE_SMOKE=1 to use .lite.toml with the API key from .env",
 )
 def test_dream_produces_non_empty_topics_with_live_provider(tmp_path):
     """End-to-end: 真实 provider 跑一次 dream，topics/ 必须产出非空文件。"""
-    from lite.config import resolve_provider_config
-    from lite.providers import (
-        AnthropicCompatibleModelClient,
-        OpenAICompatibleModelClient,
-    )
+    from scripts.formal_eval.run_lite_quality_v1 import configured_temperature
+
+    from lite.config import load_project_env, resolve_provider_config
+    from lite.providers.runtime import model_client_from_config
 
     workspace = _build_workspace(tmp_path)
     store = SessionStore(tmp_path / ".lite" / "sessions")
 
-    config = resolve_provider_config(None, start=str(tmp_path))
-    client_cls = (
-        OpenAICompatibleModelClient if config.protocol == "openai" else AnthropicCompatibleModelClient
+    load_project_env(PROJECT_ROOT, override=True)
+    config = resolve_provider_config(
+        None,
+        start=PROJECT_ROOT,
+        config_path=str(PROJECT_ROOT / ".lite.toml"),
     )
-    model = client_cls(
-        model=config.model,
-        base_url=config.base_url,
-        api_key=config.api_key,
-        temperature=0.0,
+    if not config.api_key:
+        pytest.fail(f"provider {config.name!r} selected by .lite.toml has no API key in .env")
+    model = model_client_from_config(
+        config,
+        SimpleNamespace(
+            temperature=configured_temperature(config), openai_timeout=180
+        ),
         timeout=180,
     )
 

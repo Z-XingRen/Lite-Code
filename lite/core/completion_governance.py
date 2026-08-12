@@ -184,6 +184,7 @@ def _emit_terminal_artifacts(
     agent.run_store.write_report(
         task_state, agent.redact_artifact(agent.build_report(task_state))
     )
+    agent.end_turn_context()
     if drain_workers:
         worker_events = [
             {

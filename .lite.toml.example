@@ -1,5 +1,10 @@
 provider = "deepseek"
 
+[experimental]
+multi_agent = false
+auto_dream = false
+durable_memory_retrieval = false
+
 # Keep API keys in .env, for example OPENAI_API_KEY or ANTHROPIC_API_KEY.
 
 [providers.openai]

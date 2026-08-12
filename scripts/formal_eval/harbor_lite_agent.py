@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import shlex
+import tempfile
 import tomllib
 from pathlib import Path
 from typing import override
@@ -105,6 +106,11 @@ class LiteHarborAgent(BaseAgent):
         instruction_path.write_text(instruction, encoding="utf-8")
         remote_instruction = f"/tmp/{session_id}-instruction.md"
         await environment.upload_file(instruction_path, remote_instruction)
+        remote_api_key = f"/tmp/{session_id}-api-key"
+        with tempfile.TemporaryDirectory(prefix="lite-harbor-secret-") as temp_dir:
+            local_api_key = Path(temp_dir) / "api-key"
+            local_api_key.write_text(config.api_key, encoding="utf-8")
+            await environment.upload_file(local_api_key, remote_api_key)
 
         pwd = await environment.exec("pwd", timeout_sec=30)
         self._require_success("resolve task workdir", pwd)
@@ -115,22 +121,27 @@ class LiteHarborAgent(BaseAgent):
             session_id=session_id,
             model=config.model,
             reasoning_effort=config.reasoning_effort,
+            api_key_path=remote_api_key,
         )
-        result = await environment.exec(
-            command,
-            cwd=workdir,
-            env={
-                "PYTHONPATH": CONTAINER_RUNTIME,
-                "PYTHONUTF8": "1",
-                "PYTHONUNBUFFERED": "1",
-                "LITE_PROVIDER": "openai",
-                "LITE_API_KEY": config.api_key,
-                "LITE_BASE_URL": config.base_url,
-                "LITE_MODEL": config.model,
-                "LITE_REASONING_EFFORT": config.reasoning_effort,
-            },
-            timeout_sec=None,
-        )
+        try:
+            result = await environment.exec(
+                command,
+                cwd=workdir,
+                env={
+                    "PYTHONPATH": CONTAINER_RUNTIME,
+                    "PYTHONUTF8": "1",
+                    "PYTHONUNBUFFERED": "1",
+                    "LITE_PROVIDER": "openai",
+                    "LITE_BASE_URL": config.base_url,
+                    "LITE_MODEL": config.model,
+                    "LITE_REASONING_EFFORT": config.reasoning_effort,
+                },
+                timeout_sec=None,
+            )
+        finally:
+            await environment.exec(
+                f"rm -f {shlex.quote(remote_api_key)}", timeout_sec=30
+            )
         (self.logs_dir / "lite.stdout.log").write_text(
             result.stdout or "", encoding="utf-8"
         )
@@ -228,6 +239,20 @@ fi
 if ! python3 -m pip --version >/dev/null 2>&1; then
   python3 -m ensurepip --upgrade >/dev/null 2>&1 || true
 fi
+if ! python3 -m pip --version >/dev/null 2>&1; then
+  if command -v apt-get >/dev/null 2>&1; then
+    apt-get update
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      python3-pip ca-certificates
+  elif command -v apk >/dev/null 2>&1; then
+    apk add --no-cache py3-pip ca-certificates
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y python3-pip ca-certificates
+  else
+    echo 'pip is unavailable and no supported package manager was found' >&2
+    exit 127
+  fi
+fi
 python3 -m pip --version
 python3 -m pip install --disable-pip-version-check --no-warn-script-location \
   --no-cache-dir --upgrade --target {CONTAINER_RUNTIME} {CONTAINER_SOURCE}
@@ -243,6 +268,7 @@ def _run_command(
     session_id: str,
     model: str,
     reasoning_effort: str,
+    api_key_path: str,
 ) -> str:
     args = [
         "python3",
@@ -268,12 +294,17 @@ def _run_command(
         "auto",
         "--non-interactive",
         "--final-readiness",
-        "warn",
+        "verify",
         "--no-auto-dream",
         "--max-steps",
         "50",
     ]
-    return " ".join(shlex.quote(arg) for arg in args)
+    secret_path = shlex.quote(api_key_path)
+    invocation = " ".join(shlex.quote(arg) for arg in args)
+    return (
+        f"set -eu; export LITE_API_KEY=\"$(cat {secret_path})\"; "
+        f"rm -f {secret_path}; exec {invocation}"
+    )
 
 
 def _copy_evidence_command(workdir: str) -> str:

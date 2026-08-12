@@ -1,0 +1,25 @@
+{
+  "schema_version": "lite.real_tasks.v1",
+  "benchmark_id": "lite-real-tasks-v1",
+  "source_manifest": "benchmarks/formal_v1/manifest.json",
+  "seed": 20260811,
+  "repetitions": 3,
+  "tasks": [
+    {"source_id": "F01_pricing", "scenario": "single_file_bug"},
+    {"source_id": "F02_retry", "scenario": "failure_diagnosis"},
+    {"source_id": "F03_parser", "scenario": "failure_diagnosis"},
+    {"source_id": "F04_pagination", "scenario": "single_file_bug"},
+    {"source_id": "M01_user_contract", "scenario": "cross_file_refactor"},
+    {"source_id": "M02_config_contract", "scenario": "cross_file_refactor"},
+    {"source_id": "M04_event_contract", "scenario": "cross_file_refactor"},
+    {"source_id": "C01_json_cli", "scenario": "new_interface_and_tests"},
+    {"source_id": "C04_atomic_json", "scenario": "lint_typecheck_build"},
+    {"source_id": "R01_incident_fix", "scenario": "long_context"},
+    {"source_id": "R02_health_endpoint", "scenario": "new_interface_and_tests"},
+    {"source_id": "R03_config_migration", "scenario": "long_context"},
+    {"source_id": "R04_checkpoint_resume", "scenario": "max_steps_final"},
+    {"source_id": "K01_memory_retry", "scenario": "tool_failure_recovery"},
+    {"source_id": "O01_explore_then_fix", "scenario": "consecutive_tool_calls"},
+    {"source_id": "O04_worker_stop_guard", "scenario": "tool_failure_recovery"}
+  ]
+}

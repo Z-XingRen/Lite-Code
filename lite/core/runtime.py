@@ -10,7 +10,8 @@ import os
 import textwrap
 import uuid
 import hashlib
-from dataclasses import dataclass
+import copy
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 
@@ -67,7 +68,16 @@ DEFAULT_SHELL_ENV_ALLOWLIST = (
     "TEMP",
     "USER",
 )
-DEFAULT_FEATURE_FLAGS = dict(memory=True, relevant_memory=True, context_reduction=True, prompt_cache=True)
+DEFAULT_FEATURE_FLAGS = dict(
+    memory=True,
+    relevant_memory=True,
+    multi_agent=False,
+    durable_memory_retrieval=False,
+    context_reduction=True,
+    prompt_cache=True,
+    frozen_base_context=False,
+    journal_checkpoint_policy=False,
+)
 CHECKPOINT_SCHEMA_VERSION = "phase1-v1"
 CHECKPOINT_NONE_STATUS = "no-checkpoint"
 CHECKPOINT_FULL_VALID_STATUS = "full-valid"
@@ -105,7 +115,7 @@ class Lite(RuntimeSecretsMixin, RuntimeCheckpointsMixin):
         feature_flags=None,
         write_scope=None,
         memory_dir=None,
-        auto_dream=True,
+        auto_dream=False,
         dream_interval_hours=24.0,
         dream_min_sessions=5,
         model_client_factory=None,
@@ -123,6 +133,7 @@ class Lite(RuntimeSecretsMixin, RuntimeCheckpointsMixin):
         self.model_client_router = model_client_router or ModelClientRouter(model_client)
         self.abort_requested = False
         self.current_cancellation_token = CancellationToken()
+        self.last_cancellation_acknowledged = True
         self.ask_user_callback = ask_user_callback
         self.sandbox_config = sandbox_config or SandboxConfig()
         self.sandbox_runner = SandboxRunner(
@@ -247,6 +258,8 @@ class Lite(RuntimeSecretsMixin, RuntimeCheckpointsMixin):
         self._memory_maintenance_thread = None
         self._last_tool_result_metadata = {}
         self._pending_tool_result_metadata = {}
+        self._frozen_turn_context = None
+        self._turn_context_projection_event_count = 0
         self._last_prefix_refresh = {
             "workspace_changed": False,
             "prefix_changed": False,
@@ -458,7 +471,11 @@ class Lite(RuntimeSecretsMixin, RuntimeCheckpointsMixin):
         del bucket[:-limit]
 
     def build_tools(self):
-        return toolkit.build_tool_registry(self)
+        tools = toolkit.build_tool_registry(self)
+        if not self.feature_enabled("multi_agent"):
+            for name in ("agent", "send_message", "task_stop"):
+                tools.pop(name, None)
+        return tools
 
     @staticmethod
     def _normalize_allowed_tools(allowed_tools):
@@ -668,6 +685,54 @@ class Lite(RuntimeSecretsMixin, RuntimeCheckpointsMixin):
     def feature_enabled(self, name):
         return bool(self.feature_flags.get(str(name), False))
 
+    def persistence_write_count(self):
+        """Return durable write operations observed by this runtime."""
+
+        return sum(
+            int(getattr(store, "write_count", 0) or 0)
+            for store in (
+                getattr(self, "run_store", None),
+                getattr(self, "session_journal_writer", None),
+                getattr(self, "session_event_bus", None),
+            )
+            if store is not None
+        )
+
+    def start_turn_context(self, user_message, history):
+        """Freeze the session projection used as the base for one provider turn."""
+
+        self._frozen_turn_context = None
+        self._turn_context_projection_event_count = len(list(history or []))
+        if not self.feature_enabled("frozen_base_context"):
+            return
+        refresh = self.refresh_prefix()
+        self.resume_state = self.evaluate_resume_state()
+        projection = dict(self.session)
+        projection["history"] = list(history or [])
+        snapshot = self.context_orchestrator.snapshot(
+            user_message, prefix_refresh=refresh
+        )
+        snapshot = replace(snapshot, session=projection)
+        result = self.context_orchestrator.build(snapshot)
+        metadata = copy.deepcopy(result.metadata)
+        base_hash = hashlib.sha256(result.prompt.encode("utf-8")).hexdigest()
+        metadata.update(
+            {
+                "base_context_hash": base_hash,
+                "session_projection_event_count": self._turn_context_projection_event_count,
+                "context_source": "session_projection",
+            }
+        )
+        self._frozen_turn_context = {
+            "prompt": result.prompt,
+            "metadata": metadata,
+            "base_context_hash": base_hash,
+        }
+
+    def end_turn_context(self):
+        self._frozen_turn_context = None
+        self._turn_context_projection_event_count = 0
+
     def prompt(self, user_message):
         prompt, _ = self._build_prompt_and_metadata(user_message)
         return prompt
@@ -703,6 +768,10 @@ class Lite(RuntimeSecretsMixin, RuntimeCheckpointsMixin):
         return metadata
 
     def _build_prompt_and_metadata(self, user_message):
+        if self._frozen_turn_context is not None:
+            metadata = copy.deepcopy(self._frozen_turn_context["metadata"])
+            metadata["context_source"] = "session_projection"
+            return self._frozen_turn_context["prompt"], metadata
         refresh = self.refresh_prefix()
         self.resume_state = self.evaluate_resume_state()
         snapshot = self.context_orchestrator.snapshot(user_message, prefix_refresh=refresh)
@@ -749,7 +818,7 @@ class Lite(RuntimeSecretsMixin, RuntimeCheckpointsMixin):
         thread.join(timeout=timeout)
         return not thread.is_alive()
 
-    def emit_trace(self, task_state, event, payload=None):
+    def emit_trace(self, task_state, event, payload=None, *, persist_state=True):
         payload = self.redact_artifact(payload or {})
         for path in payload.get("affected_paths", []) or []:
             if path not in task_state.changed_paths:
@@ -770,7 +839,8 @@ class Lite(RuntimeSecretsMixin, RuntimeCheckpointsMixin):
                 task_state.evidence_summaries.setdefault("runtime_consumer_errors", []).append(error)
                 if error["critical"]:
                     task_state.evidence_summaries.setdefault("consumer_errors", []).append(error)
-        self.run_store.write_task_state(task_state)
+        if persist_state:
+            self.run_store.write_task_state(task_state)
         return payload
     def infer_next_step(self, task_state):
         if task_state.status == "completed":
@@ -862,7 +932,15 @@ class Lite(RuntimeSecretsMixin, RuntimeCheckpointsMixin):
 
     def abort_current_turn(self):
         self.abort_requested = True
-        self.current_cancellation_token.cancel()
+        token = self.current_cancellation_token
+        token.cancel()
+        acknowledged = token.wait_for_acknowledgements(timeout=5.0)
+        self.last_cancellation_acknowledged = bool(acknowledged)
+        if not acknowledged and hasattr(self, "session_event_bus"):
+            self.session_event_bus.emit(
+                "cancellation_termination_timeout",
+                {"timeout_ms": 5000},
+            )
         abort = getattr(self.model_client, "abort", None)
         if callable(abort):
             try:

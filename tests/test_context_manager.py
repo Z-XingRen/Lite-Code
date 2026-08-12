@@ -265,7 +265,11 @@ def test_context_manager_relevant_memory_can_mix_durable_notes(tmp_path):
         encoding="utf-8",
     )
 
-    agent = build_agent(tmp_path, [])
+    agent = build_agent(
+        tmp_path,
+        [],
+        feature_flags={"durable_memory_retrieval": True},
+    )
 
     prompt, metadata = ContextManager(agent).build("What conventions should I follow?")
     relevant_section = prompt.split("Relevant memory:\n", 1)[1].split("\n\nTranscript:", 1)[0]

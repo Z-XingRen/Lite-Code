@@ -1670,7 +1670,7 @@ def test_final_memory_tags_are_appended_to_daily_log(tmp_path):
 
 
 def test_memory_maintenance_report_explains_auto_dream_skip_reason(tmp_path):
-    agent = build_agent(tmp_path, ["<final>Done.</final>"])
+    agent = build_agent(tmp_path, ["<final>Done.</final>"], auto_dream=True)
 
     assert agent.ask("Finish without enough sessions") == "Done."
 
@@ -1741,6 +1741,7 @@ def test_auto_dream_runs_in_background_after_session_gate(tmp_path):
         ],
         dream_min_sessions=2,
         dream_interval_hours=0,
+        auto_dream=True,
     )
 
     answer = agent.ask("Finish and trigger memory maintenance")
@@ -1784,6 +1785,7 @@ def test_background_auto_dream_failure_restores_lock_and_reports_error(tmp_path,
         ["<final><memory>Project: keep memory observable.</memory></final>"],
         dream_min_sessions=2,
         dream_interval_hours=0,
+        auto_dream=True,
     )
 
     assert agent.ask("Finish and trigger failing memory maintenance") == "<memory>Project: keep memory observable.</memory>"

@@ -55,8 +55,10 @@ def test_verification_classifier_accepts_common_test_commands():
         "uv run pytest tests -q": "test",
         "python -m pytest -q": "test",
         "python3.11 -m compileall lite": "compile",
+        "python -m py_compile lite/core/runtime.py": "compile",
         "python -m ruff check lite": "lint",
         "python -m mypy lite": "typecheck",
+        "python -c \"assert 1 + 1 == 2\"": "synthetic",
         "ruff check lite tests": "lint",
         "mypy lite": "typecheck",
         "pyright": "typecheck",
@@ -99,15 +101,56 @@ def test_verification_signal_marks_workspace_change_as_missing_until_verified():
         "state": "missing",
         "last_workspace_change_span_id": "span_change",
         "changed_paths": ["src/app.py"],
+        "test_state": "missing",
+        "last_mutation_sequence": 1,
+        "last_successful_verification_sequence": 0,
     }
 
-    verified = reduce_verification_signal(
-        signal, tool_event("pytest -q"), ["src/app.py"]
-    )
+    verified = reduce_verification_signal(signal, tool_event("pytest -q"), ["src/app.py"])
 
     assert verified["state"] == "passed"
     assert verified["last_workspace_change_span_id"] == "span_change"
     assert verified["after_last_workspace_change"] is True
+    assert verified["test_state"] == "passed"
+    assert verified["test_command"] == "pytest -q"
+
+
+def test_non_test_checks_do_not_erase_failed_test_evidence():
+    signal = reduce_verification_signal(
+        {}, tool_event("pytest tests/test_app.py -q", status="error"), ["src/app.py"]
+    )
+
+    compiled = reduce_verification_signal(
+        signal, tool_event("python -m py_compile src/app.py"), ["src/app.py"]
+    )
+    synthetic = reduce_verification_signal(
+        compiled, tool_event("python -c \"assert True\""), ["src/app.py"]
+    )
+
+    assert compiled["state"] == "passed"
+    assert compiled["command_class"] == "compile"
+    assert synthetic["state"] == "passed"
+    assert synthetic["command_class"] == "synthetic"
+    assert synthetic["test_state"] == "failed"
+    assert synthetic["test_command"] == "pytest tests/test_app.py -q"
+
+
+def test_workspace_change_resets_previous_successful_test_evidence():
+    signal = reduce_verification_signal(
+        {}, tool_event("pytest -q"), ["src/app.py"]
+    )
+    changed = {
+        "event": "tool_executed",
+        "name": "patch_file",
+        "workspace_changed": True,
+        "span_id": "span_second_change",
+    }
+
+    reset = reduce_verification_signal(signal, changed, ["src/app.py"])
+
+    assert reset["state"] == "missing"
+    assert reset["test_state"] == "missing"
+    assert "test_command" not in reset
 
 
 def test_structured_verification_receipt_is_reduced_without_command_guessing():
@@ -121,6 +164,7 @@ def test_structured_verification_receipt_is_reduced_without_command_guessing():
     )
 
     assert signal["state"] == "passed"
+    assert signal["test_state"] == "passed"
     assert signal["command"] == "custom project check"
     assert signal["command_class"] == "test"
     assert signal["covers_changed_paths"] is True
@@ -138,6 +182,7 @@ def test_structured_verification_receipt_uses_exit_code_for_failure():
     )
 
     assert signal["state"] == "failed"
+    assert signal["test_state"] == "failed"
     assert signal["covers_changed_paths"] is True
 
 

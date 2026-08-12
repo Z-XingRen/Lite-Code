@@ -7,15 +7,26 @@ import random
 import statistics
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
-from lite.config import load_project_env, resolve_provider_config
 from lite.evaluation.context_cost import (
     DEFAULT_PROXY_PRICING,
     _run_long_session_task,
     build_result_payload,
     generate_report,
 )
-from lite.providers import OpenAICompatibleModelClient
+try:
+    from .run_lite_quality_v1 import (
+        configured_temperature,
+        make_client,
+        provider_metadata,
+    )
+except ImportError:  # direct script execution
+    from run_lite_quality_v1 import (
+        configured_temperature,
+        make_client,
+        provider_metadata,
+    )
 
 ROOT = Path(__file__).resolve().parents[2]
 TASKS = ROOT / "benchmarks/formal_v1/long_session_tasks_10.json"
@@ -24,21 +35,7 @@ VARIANTS = ["no_context_reduction", "full_orchestrator"]
 
 
 def client_factory(**_):
-    load_project_env(ROOT, override=True)
-    config = resolve_provider_config(
-        "openai", start=ROOT, config_path=ROOT / ".lite.toml"
-    )
-    if config.protocol != "openai" or not config.api_key:
-        raise RuntimeError("context A/B requires a configured OpenAI-compatible model")
-    return OpenAICompatibleModelClient(
-        model=config.model,
-        base_url=config.base_url,
-        api_key=config.api_key,
-        temperature=0.0,
-        timeout=300,
-        strict_tools=config.strict_tools,
-        reasoning_effort=config.reasoning_effort,
-    )
+    return make_client(provider_metadata())
 
 
 def bootstrap_ci(values, *, samples=5000, seed=20260806):
@@ -205,9 +202,7 @@ def main():
         tasks = tasks[: args.limit]
     if not tasks:
         raise ValueError("context A/B task selection is empty")
-    config = resolve_provider_config(
-        "openai", start=ROOT, config_path=ROOT / ".lite.toml"
-    )
+    config = provider_metadata()
     out = Path(args.output_dir).resolve()
     out.mkdir(parents=True, exist_ok=True)
     ensure_evaluation_identity(out, config, tasks, args.repetitions)
@@ -236,7 +231,7 @@ def main():
                     variant=variant,
                     repeat=repeat,
                     mode="live",
-                    provider="openai",
+                    provider=config.name,
                     provider_client_factory=client_factory,
                     output_dir=out / "work",
                     pricing=DEFAULT_PROXY_PRICING,
@@ -268,11 +263,14 @@ def main():
     metrics = paired_metrics(payload["rows"])
     payload["formal_metrics"] = metrics
     payload["model"] = {
+        "source": str(ROOT / ".lite.toml"),
         "provider": config.name,
         "protocol": config.protocol,
         "model": config.model,
         "reasoning_effort": config.reasoning_effort,
-        "base_url": config.base_url,
+        "strict_tools": config.strict_tools,
+        "temperature": configured_temperature(config),
+        "base_url_hostname": urlparse(config.base_url).hostname,
         "api_key_present": bool(config.api_key),
     }
     (out / "results.json").write_text(

@@ -47,7 +47,11 @@ class ContextOrchestrator:
         )
 
     def build(self, snapshot):
-        prompt, metadata = self.agent.context_manager.build(snapshot.request)
+        prompt, metadata = self.agent.context_manager.build(
+            snapshot.request,
+            history=snapshot.session.get("history", []),
+            context_source="session_projection",
+        )
         plan = None
         summary = None
         should_compact = False
@@ -70,7 +74,11 @@ class ContextOrchestrator:
             )
             should_compact = bool(summary.get("summary_called", True))
             if should_compact:
-                prompt, metadata = self.agent.context_manager.build(snapshot.request)
+                prompt, metadata = self.agent.context_manager.build(
+                    snapshot.request,
+                    history=self.agent.session.get("history", []),
+                    context_source="session_projection",
+                )
             post_compact_estimated_tokens = int(
                 (metadata.get("context_usage", {}) or {}).get("total_estimated_tokens", 0) or 0
             )

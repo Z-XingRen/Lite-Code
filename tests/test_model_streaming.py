@@ -1,3 +1,5 @@
+import json
+
 from lite import Lite, SessionStore, WorkspaceContext
 from lite.providers import ModelStreamEvent
 from lite.testing import ScriptedModelClient, ScriptedStreamingModelClient
@@ -138,6 +140,42 @@ def test_stream_without_done_is_rejected_without_committing_partial_text(tmp_pat
     assert not any(
         item.get("content") == "unfinished" for item in agent.session["history"]
     )
+
+
+def test_incomplete_stream_is_retried_once_and_can_recover(tmp_path):
+    client = ScriptedStreamingModelClient(
+        [
+            [
+                ModelStreamEvent(kind="message_start"),
+                ModelStreamEvent(kind="text_delta", text_delta="unfinished"),
+            ],
+            final_stream("Recovered."),
+        ]
+    )
+    agent = build_agent(tmp_path, client)
+
+    events = list(agent.engine.run_turn("Recover an incomplete stream"))
+
+    assert next(event for event in events if event["type"] == "final")[
+        "content"
+    ] == "Recovered."
+    assert [
+        item["content"]
+        for item in agent.session["history"]
+        if item["role"] == "assistant"
+    ] == ["Recovered."]
+    retry_events = [
+        event
+        for event in (
+            json.loads(line)
+            for line in agent.session_event_bus.path.read_text(
+                encoding="utf-8"
+            ).splitlines()
+        )
+        if event["event"] == "model_retry_scheduled"
+    ]
+    assert len(retry_events) == 1
+    assert retry_events[0]["code"] == "ModelStreamProtocolError"
 
 
 def test_abort_during_tool_arguments_discards_partial_call(tmp_path):

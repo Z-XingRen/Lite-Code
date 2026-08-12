@@ -1,6 +1,7 @@
 """Unit tests for final-readiness gate decisions and notices."""
 
 from lite.core.final_readiness import (
+    VALID_MODES,
     evaluate_final_readiness,
     extract_required_artifact_paths,
     readiness_notice,
@@ -10,6 +11,36 @@ from lite.core.task_state import TaskState
 
 def task_state():
     return TaskState.create(task_id="task_1", run_id="run_1", user_request="demo")
+
+
+def test_enforce_mode_uses_one_canonical_verification_reason_and_sequence_freshness():
+    assert VALID_MODES == {"off", "warn", "enforce"}
+    state = task_state()
+    state.changed_paths = ["src/app.py"]
+    state.evidence_summaries = {
+        "verification_signal": {
+            "state": "passed",
+            "last_mutation_sequence": 8,
+            "last_successful_verification_sequence": 8,
+            "verification_receipt": {
+                "schema_version": "lite.verification_receipt.v1",
+                "exit_code": 0,
+            },
+        }
+    }
+
+    stale = evaluate_final_readiness(state, "enforce")
+
+    assert stale["decision"] == "block"
+    assert stale["action"] == "block"
+    assert stale["reasons"] == ["verification_required"]
+
+    state.evidence_summaries["verification_signal"][
+        "last_successful_verification_sequence"
+    ] = 9
+    fresh = evaluate_final_readiness(state, "enforce")
+    assert fresh["decision"] == "allow"
+    assert fresh["reasons"] == []
 
 
 def test_final_readiness_detects_unresolved_current_run_high_priority_todo():
@@ -221,6 +252,44 @@ def test_final_readiness_blocks_partial_success_workspace_change():
     assert decision["decision"] == "block"
     assert decision["action"] == "block"
     assert decision["reasons"] == ["partial_success_workspace_changed"]
+
+
+def test_verify_readiness_requires_successful_tests_for_code_changes():
+    state = task_state()
+    state.changed_paths = ["src/app.py"]
+    state.evidence_summaries = {
+        "verification_signal": {
+            "state": "passed",
+            "command_class": "compile",
+            "test_state": "failed",
+        }
+    }
+
+    first = evaluate_final_readiness(state, "verify")
+    second = evaluate_final_readiness(state, "verify")
+
+    assert first["decision"] == "remind"
+    assert first["action"] == "runtime_notice"
+    assert first["reasons"] == ["changed_code_without_test_verification"]
+    assert second["decision"] == "block"
+    assert second["action"] == "block"
+
+
+def test_verify_readiness_allows_successful_tests_after_code_changes():
+    state = task_state()
+    state.changed_paths = ["src/app.py"]
+    state.evidence_summaries = {
+        "verification_signal": {
+            "state": "passed",
+            "command_class": "test",
+            "test_state": "passed",
+        }
+    }
+
+    decision = evaluate_final_readiness(state, "verify")
+
+    assert decision["decision"] == "allow"
+    assert decision["reasons"] == []
 
 
 def test_required_artifact_extraction_tracks_output_directory(tmp_path):

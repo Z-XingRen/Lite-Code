@@ -22,6 +22,7 @@ class RunStore:
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
+        self.write_count = 0
 
     def run_dir(self, run_id):
         return self.root / _run_id(run_id)
@@ -47,12 +48,14 @@ class RunStore:
         return run_dir
 
     def write_task_state(self, task_state):
+        self.write_count += 1
         path = self.task_state_path(task_state)
         path.parent.mkdir(parents=True, exist_ok=True)
         self._write_json_atomic(path, task_state.to_dict())
         return path
 
     def append_trace(self, task_state, event):
+        self.write_count += 1
         path = self.trace_path(task_state)
         path.parent.mkdir(parents=True, exist_ok=True)
         # trace 采用 jsonl 追加写入，原因是 agent 运行过程是流式事件序列，
@@ -64,6 +67,7 @@ class RunStore:
         return path
 
     def write_text_artifact(self, task_state, stem, content):
+        self.write_count += 1
         directory = self.artifacts_dir(task_state)
         directory.mkdir(parents=True, exist_ok=True)
         index = len(list(directory.glob(f"{stem}-*.txt"))) + 1
@@ -74,6 +78,7 @@ class RunStore:
         return path
 
     def write_binary_artifact(self, task_state, stem, content, suffix):
+        self.write_count += 1
         directory = self.artifacts_dir(task_state)
         directory.mkdir(parents=True, exist_ok=True)
         suffix = str(suffix or "").strip()
@@ -89,6 +94,7 @@ class RunStore:
         return path.relative_to(base).as_posix()
 
     def write_report(self, task_state, report):
+        self.write_count += 1
         path = self.report_path(task_state)
         path.parent.mkdir(parents=True, exist_ok=True)
         self._write_json_atomic(path, report)

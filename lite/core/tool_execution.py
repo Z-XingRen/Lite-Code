@@ -267,6 +267,8 @@ def tool_result_metadata(
 
 
 def emit_permission_decision(agent, tool, args, decision):
+    if _defer_read_only_projection(agent, tool):
+        return
     agent.session_event_bus.emit(
         "permission_decision",
         {
@@ -281,6 +283,8 @@ def emit_permission_decision(agent, tool, args, decision):
 
 
 def emit_tool_policy_decision(agent, tool, args, decision):
+    if _defer_read_only_projection(agent, tool):
+        return
     agent.session_event_bus.emit(
         "tool_policy_decision",
         {
@@ -289,6 +293,15 @@ def emit_tool_policy_decision(agent, tool, args, decision):
             "reason": decision.reason,
             "args": args or {},
         },
+    )
+
+
+def _defer_read_only_projection(agent, tool):
+    return bool(
+        getattr(agent, "feature_enabled", lambda _name: False)(
+            "journal_checkpoint_policy"
+        )
+        and getattr(tool, "read_only", False)
     )
 
 

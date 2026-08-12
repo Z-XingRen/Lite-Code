@@ -15,6 +15,7 @@ PHASE_BY_EVENT = {
     "model_parsed": "parse",
     "loop_transition": "loop",
     "governance_decision": "governance",
+    "governance_batch": "governance",
     "final_readiness_decision": "final_gate",
     "tool_executed": "tool",
     "checkpoint_created": "checkpoint",

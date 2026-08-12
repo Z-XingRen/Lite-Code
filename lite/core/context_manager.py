@@ -73,7 +73,7 @@ class ContextManager:
         self.reduction_order = tuple(reduction_order or REDUCTION_ORDER)
         self.history_builder = TurnHistoryBuilder(agent)
 
-    def build(self, user_message):
+    def build(self, user_message, *, history=None, context_source="session_transcript"):
         """按预算组装一轮完整 prompt。
 
         为什么存在：
@@ -122,10 +122,24 @@ class ContextManager:
             section_texts["memory"] += "\n\n" + memorylib.build_memory_system_section(self.agent.memory_dir)
         selected_notes = []
         if memory_enabled and relevant_memory_enabled and hasattr(self.agent, "memory") and hasattr(self.agent.memory, "retrieval_candidates"):
-            selected_notes = self.agent.memory.retrieval_candidates(user_message, limit=RELEVANT_MEMORY_LIMIT)
+            include_durable = True
+            if hasattr(self.agent, "feature_enabled"):
+                include_durable = self.agent.feature_enabled("durable_memory_retrieval")
+            try:
+                selected_notes = self.agent.memory.retrieval_candidates(
+                    user_message,
+                    limit=RELEVANT_MEMORY_LIMIT,
+                    include_durable=include_durable,
+                )
+            except TypeError:
+                selected_notes = self.agent.memory.retrieval_candidates(
+                    user_message, limit=RELEVANT_MEMORY_LIMIT
+                )
 
         if not context_reduction_enabled:
-            rendered = self._render_sections_without_reduction(section_texts, selected_notes=selected_notes)
+            rendered = self._render_sections_without_reduction(
+                section_texts, selected_notes=selected_notes, history=history
+            )
             prompt = self._assemble_prompt(rendered)
             metadata = self._metadata(
                 prompt=prompt,
@@ -136,15 +150,25 @@ class ContextManager:
                 user_message=user_message,
                 section_texts=section_texts,
             )
+            if context_source != "session_transcript":
+                metadata["context_source"] = str(context_source)
             return prompt, metadata
 
         budgets = dict(self.section_budgets)
-        rendered = self._render_sections(section_texts, budgets, selected_notes=selected_notes)
+        rendered = self._render_sections(
+            section_texts, budgets, selected_notes=selected_notes, history=history
+        )
         prompt = self._assemble_prompt(rendered)
         pressure = self._prompt_pressure(len(prompt))
         if pressure.tier != "tier0_observe":
             budgets = self._pressure_adjusted_budgets(budgets, pressure)
-            rendered = self._render_sections(section_texts, budgets, selected_notes=selected_notes, pressure=pressure)
+            rendered = self._render_sections(
+                section_texts,
+                budgets,
+                selected_notes=selected_notes,
+                pressure=pressure,
+                history=history,
+            )
             prompt = self._assemble_prompt(rendered)
         reduction_log = []
 
@@ -168,7 +192,13 @@ class ContextManager:
                     }
                 )
                 budgets[section] = new_budget
-                rendered = self._render_sections(section_texts, budgets, selected_notes=selected_notes, pressure=pressure)
+                rendered = self._render_sections(
+                    section_texts,
+                    budgets,
+                    selected_notes=selected_notes,
+                    pressure=pressure,
+                    history=history,
+                )
                 prompt = self._assemble_prompt(rendered)
                 reduced = True
                 break
@@ -185,9 +215,13 @@ class ContextManager:
             section_texts=section_texts,
             pressure=pressure,
         )
+        if context_source != "session_transcript":
+            metadata["context_source"] = str(context_source)
         return prompt, metadata
 
-    def _render_sections_without_reduction(self, section_texts, selected_notes=None):
+    def _render_sections_without_reduction(
+        self, section_texts, selected_notes=None, history=None
+    ):
         selected_notes = selected_notes or []
         relevant_lines = ["Relevant memory:"]
         if selected_notes:
@@ -195,7 +229,11 @@ class ContextManager:
         else:
             relevant_lines.append("- none")
         relevant_raw = "\n".join(relevant_lines)
-        history = list(getattr(self.agent, "session", {}).get("history", []))
+        history = list(
+            getattr(self.agent, "session", {}).get("history", [])
+            if history is None
+            else history
+        )
         history_raw = self.history_builder.raw_text(history)
         return {
             "prefix": SectionRender(raw=section_texts["prefix"], budget=len(section_texts["prefix"]), rendered=section_texts["prefix"], details={}),
@@ -230,7 +268,9 @@ class ContextManager:
         floors.update(self._section_floor_overrides)
         return floors
 
-    def _render_sections(self, section_texts, budgets, selected_notes=None, pressure=None):
+    def _render_sections(
+        self, section_texts, budgets, selected_notes=None, pressure=None, history=None
+    ):
         rendered = {}
         for section in SECTION_ORDER:
             budget = budgets.get(section)
@@ -240,7 +280,9 @@ class ContextManager:
             elif section == "relevant_memory":
                 rendered[section] = self._render_relevant_memory(selected_notes or [], int(budget or 0))
             elif section == "history":
-                rendered[section] = self._render_history_section(int(budget or 0), pressure=pressure)
+                rendered[section] = self._render_history_section(
+                    int(budget or 0), pressure=pressure, history=history
+                )
             else:
                 raw = section_texts[section]
                 rendered_text = tail_clip(raw, int(budget)) if budget is not None else raw
@@ -322,8 +364,12 @@ class ContextManager:
         usable = max(0, budget - overhead)
         return max(1, usable // note_count)
 
-    def _render_history_section(self, budget, pressure=None):
-        history = list(getattr(self.agent, "session", {}).get("history", []))
+    def _render_history_section(self, budget, pressure=None, history=None):
+        history = list(
+            getattr(self.agent, "session", {}).get("history", [])
+            if history is None
+            else history
+        )
         raw = self.history_builder.raw_text(history)
         if not history:
             rendered = "Transcript:\n- empty"
@@ -341,7 +387,9 @@ class ContextManager:
                 },
             )
 
-        rendered, history_details = self.history_builder.render_section(budget, pressure=pressure)
+        rendered, history_details = self.history_builder.render_section(
+            budget, pressure=pressure, history=history
+        )
 
         return SectionRender(
             raw=raw,

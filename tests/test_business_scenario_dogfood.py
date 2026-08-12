@@ -21,8 +21,44 @@ def test_business_scenario_dogfood_uses_real_provider_only():
 
     assert "ScriptedModelClient" not in source
     assert "resolve_provider_config" in source
-    assert "OpenAICompatibleModelClient" in source
-    assert "AnthropicCompatibleModelClient" in source
+    assert "load_project_env" in source
+    assert "model_client_from_config" in source
+
+
+def test_business_dogfood_uses_toml_model_and_env_api_key(tmp_path, monkeypatch):
+    module = _load_module()
+    config_path = tmp_path / ".lite.toml"
+    config_path.write_text(
+        "\n".join(
+            [
+                'provider = "openai"',
+                "",
+                "[providers.openai]",
+                'protocol = "openai"',
+                'base_url = "https://example.test/v1"',
+                'model = "gpt-from-toml"',
+                'reasoning_effort = "high"',
+                "strict_tools = true",
+                "temperature = 0.25",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / ".env").write_text(
+        "LITE_OPENAI_API_KEY=env-only-secret\n", encoding="utf-8"
+    )
+    monkeypatch.delenv("LITE_OPENAI_API_KEY", raising=False)
+
+    factory, metadata = module._build_client_factory(config_path=config_path)
+    client = factory()
+
+    assert client.model == "gpt-from-toml"
+    assert client.temperature == 0.25
+    assert client.reasoning_effort == "high"
+    assert client.strict_tools is True
+    assert metadata["model"] == "gpt-from-toml"
+    assert metadata["api_key_present"] is True
+    assert "env-only-secret" not in json.dumps(metadata)
 
 
 @pytest.mark.skipif(

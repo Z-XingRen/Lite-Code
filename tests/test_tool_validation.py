@@ -21,6 +21,7 @@ def build_workspace(tmp_path):
 def build_agent(tmp_path, **kwargs):
     workspace = build_workspace(tmp_path)
     store = SessionStore(tmp_path / ".lite" / "sessions")
+    kwargs.setdefault("feature_flags", {"multi_agent": True})
     return Lite(
         model_client=ScriptedModelClient([]),
         workspace=workspace,

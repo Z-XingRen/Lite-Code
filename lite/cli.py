@@ -19,6 +19,7 @@ from .config import (
     DEFAULT_PROVIDER,
     PROVIDER_DEFAULTS,
     load_project_env,
+    resolve_experimental_features,
     resolve_project_sandbox_config,
 )
 from .features import memory as memorylib
@@ -207,7 +208,12 @@ def build_agent(args):
     if session_id == "latest":
         session_id = store.latest()
     memory_dir = getattr(args, "memory_dir", None)
-    auto_dream = not getattr(args, "no_auto_dream", False)
+    experimental = resolve_experimental_features(
+        workspace.repo_root, config_path=getattr(args, "config", None)
+    )
+    if getattr(args, "no_auto_dream", False):
+        experimental["auto_dream"] = False
+    auto_dream = experimental["auto_dream"]
     dream_interval = getattr(args, "dream_interval", 24.0)
     dream_min_sessions = getattr(args, "dream_min_sessions", 5)
     final_readiness_mode = getattr(args, "final_readiness", "warn")
@@ -239,6 +245,7 @@ def build_agent(args):
             sandbox_config=sandbox_config,
             ask_user_callback=ask_user_callback,
             final_readiness_mode=final_readiness_mode,
+            feature_flags=experimental,
         )
         return agent
     session = None
@@ -272,6 +279,7 @@ def build_agent(args):
         sandbox_config=sandbox_config,
         ask_user_callback=ask_user_callback,
         final_readiness_mode=final_readiness_mode,
+        feature_flags=experimental,
     )
     return agent
 
@@ -427,7 +435,7 @@ def build_arg_parser():
     )
     parser.add_argument(
         "--final-readiness",
-        choices=("off", "warn", "soft", "strict"),
+        choices=("off", "warn", "enforce"),
         default="warn",
         help="Final-answer readiness gate mode.",
     )

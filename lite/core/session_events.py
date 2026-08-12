@@ -16,6 +16,7 @@ class SessionEventBus:
         self.path = Path(path)
         self.redact = redact or (lambda value: value)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.write_count = 0
 
     def emit(self, event, payload=None):
         record = dict(payload or {})
@@ -26,4 +27,5 @@ class SessionEventBus:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("a", encoding="utf-8") as file:
             file.write(json.dumps(record, sort_keys=True) + "\n")
+        self.write_count += 1
         return record

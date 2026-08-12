@@ -8,15 +8,22 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from lite import Lite, SessionStore, WorkspaceContext  # noqa: E402
-from lite.config import resolve_provider_config  # noqa: E402
+from lite.config import load_project_env, resolve_provider_config  # noqa: E402
 from lite.features.skills_runtime import invoke_skill  # noqa: E402
-from lite.providers import AnthropicCompatibleModelClient, OpenAICompatibleModelClient  # noqa: E402
+from lite.providers.runtime import model_client_from_config  # noqa: E402
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python 3.10 dependency
+    import tomli as tomllib
 
 SUMMARY_JSON = "business-scenario-dogfood.json"
 SUMMARY_MARKDOWN = "business-scenario-dogfood.md"
@@ -292,11 +299,20 @@ def _scenario_workspace(workspace):
     return WorkspaceContext.build(workspace, repo_root_override=workspace)
 
 
+def _configured_temperature(config_path, provider_name):
+    with Path(config_path).open("rb") as handle:
+        payload = tomllib.load(handle)
+    profile = payload.get("providers", {}).get(provider_name, {})
+    return profile.get("temperature") if isinstance(profile, dict) else None
+
+
 def _build_client_factory(*, config_path=None, provider=None, model=None, base_url=None, api_key=None):
+    selected_config = Path(config_path).resolve() if config_path else ROOT / ".lite.toml"
+    load_project_env(selected_config.parent, override=True)
     config = resolve_provider_config(
         provider,
         start=ROOT,
-        config_path=config_path,
+        config_path=str(selected_config),
         model=model,
         base_url=base_url,
         api_key=api_key,
@@ -304,30 +320,25 @@ def _build_client_factory(*, config_path=None, provider=None, model=None, base_u
     if not config.api_key:
         raise ValueError(f"provider {config.name!r} has no api key; configure .lite.toml or pass --api-key")
 
+    temperature = _configured_temperature(selected_config, config.name)
+
     def factory():
-        if config.protocol == "openai":
-            return OpenAICompatibleModelClient(
-                model=config.model,
-                base_url=config.base_url,
-                api_key=config.api_key,
-                temperature=0,
-                timeout=300,
-            )
-        if config.protocol == "anthropic":
-            return AnthropicCompatibleModelClient(
-                model=config.model,
-                base_url=config.base_url,
-                api_key=config.api_key,
-                temperature=0,
-                timeout=300,
-            )
-        raise ValueError(f"unknown provider protocol: {config.protocol}")
+        return model_client_from_config(
+            config,
+            SimpleNamespace(temperature=temperature, openai_timeout=300),
+            timeout=300,
+        )
 
     return factory, {
         "name": config.name,
         "protocol": config.protocol,
-        "base_url": config.base_url,
+        "config": str(selected_config),
+        "base_url_hostname": urlparse(config.base_url).hostname,
         "model": config.model,
+        "reasoning_effort": config.reasoning_effort,
+        "strict_tools": config.strict_tools,
+        "temperature": temperature,
+        "api_key_present": bool(config.api_key),
     }
 
 

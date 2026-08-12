@@ -19,6 +19,11 @@ ENV_KEY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 DEFAULT_PROVIDER = "openai"
 DEFAULT_CONFIG_PATH = Path.home() / ".config" / "lite" / "config.toml"
 PROJECT_CONFIG_NAME = ".lite.toml"
+EXPERIMENTAL_DEFAULTS = {
+    "multi_agent": False,
+    "auto_dream": False,
+    "durable_memory_retrieval": False,
+}
 
 
 @dataclass(frozen=True)
@@ -397,13 +402,28 @@ def resolve_project_sandbox_config(
     return resolve_sandbox_values(values)
 
 
+def resolve_experimental_features(
+    start: str | Path = ".", config_path: str | None = None
+) -> dict[str, bool]:
+    """Resolve opt-in experimental features from project configuration."""
+
+    values = dict(EXPERIMENTAL_DEFAULTS)
+    file_values = _load_config_values(start=start, explicit_path=config_path)
+    configured = file_values.get("experimental", {})
+    if isinstance(configured, dict):
+        for name in values:
+            if name in configured:
+                values[name] = bool(configured[name])
+    return values
+
+
 def normalize_provider_name(provider: str | None) -> str:
     normalized = (provider or DEFAULT_PROVIDER).strip().lower()
     return PROVIDER_ALIASES.get(normalized, normalized)
 
 
 def _load_config_values(start: str | Path, explicit_path: str | None) -> dict[str, Any]:
-    values: dict[str, Any] = {"top": {}, "providers": {}, "sandbox": {}}
+    values: dict[str, Any] = {"top": {}, "providers": {}, "sandbox": {}, "experimental": {}}
     if explicit_path:
         _merge_config_values(
             values, _read_config_file(Path(explicit_path).expanduser())
@@ -425,7 +445,7 @@ def _read_config_file(path: Path) -> dict[str, Any]:
     except OSError as exc:
         raise ValueError(f"could not read Lite config file {path}: {exc}") from exc
 
-    values: dict[str, Any] = {"top": {}, "providers": {}, "sandbox": {}}
+    values: dict[str, Any] = {"top": {}, "providers": {}, "sandbox": {}, "experimental": {}}
     if "provider" in data:
         values["top"]["provider"] = data["provider"]
 
@@ -439,6 +459,10 @@ def _read_config_file(path: Path) -> dict[str, Any]:
     if isinstance(sandbox, dict):
         values["sandbox"] = dict(sandbox)
 
+    experimental = data.get("experimental", {})
+    if isinstance(experimental, dict):
+        values["experimental"] = dict(experimental)
+
     for name in ("openai", "anthropic", "deepseek"):
         section = data.get(name, {})
         if isinstance(section, dict):
@@ -449,6 +473,7 @@ def _read_config_file(path: Path) -> dict[str, Any]:
 def _merge_config_values(target: dict[str, Any], incoming: dict[str, Any]) -> None:
     target["top"].update(incoming.get("top", {}))
     target["sandbox"].update(incoming.get("sandbox", {}))
+    target["experimental"].update(incoming.get("experimental", {}))
     for name, section in incoming.get("providers", {}).items():
         target["providers"].setdefault(name, {}).update(section)
 

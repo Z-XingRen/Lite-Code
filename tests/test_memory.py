@@ -497,6 +497,7 @@ def test_auto_dream_writes_quality_report_under_memory_dir(tmp_path):
         ],
         dream_min_sessions=2,
         dream_interval_hours=0,
+        auto_dream=True,
     )
 
     assert agent.ask("finish") == "<memory>Project fact for auto dream.</memory>"

@@ -6,11 +6,14 @@ import threading
 import time
 
 from lite import Lite, SessionStore, WorkspaceContext
+from lite.cancellation import CancellationRequested, CancellationToken
+from lite.features.sandbox.process import run_cancellable_process
 from lite.testing import ScriptedModelClient, shell_join
 
 
 def build_agent(tmp_path, outputs, **kwargs):
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
+    kwargs.setdefault("feature_flags", {"multi_agent": True})
     return Lite(
         model_client=ScriptedModelClient(outputs),
         workspace=WorkspaceContext.build(tmp_path),
@@ -161,6 +164,113 @@ def test_runtime_abort_terminates_shell_tree_and_history_can_resume(tmp_path):
     assert "cancel" in tool_item["content"].lower()
     assert tool_item["tool_error_code"] == "tool_cancelled"
     assert agent.ask("continue after the cancelled shell") == "Resumed cleanly."
+
+
+def test_cancellation_exposes_process_tree_termination_acknowledgement(tmp_path):
+    command, parent_pid_path, child_pid_path, started, _ = process_tree_command(
+        tmp_path, late_delay=2.0
+    )
+    token = CancellationToken()
+    outcome = {}
+
+    def run_command():
+        try:
+            run_cancellable_process(
+                command,
+                cwd=tmp_path,
+                env=os.environ.copy(),
+                timeout=20,
+                shell=True,
+                cancellation_token=token,
+            )
+        except BaseException as exc:
+            outcome["error"] = exc
+
+    thread = threading.Thread(target=run_command, name="test-cancellable-process")
+    thread.start()
+    assert wait_for_path(started)
+    token.cancel()
+
+    assert token.wait_for_acknowledgements(timeout=5)
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert wait_for_process_exit(read_pid(parent_pid_path))
+    assert wait_for_process_exit(read_pid(child_pid_path))
+    assert isinstance(outcome.get("error"), CancellationRequested)
+
+
+def test_posix_cancellation_acknowledgement_covers_process_group(tmp_path):
+    if os.name == "nt":
+        return
+    command, parent_pid_path, child_pid_path, started, _ = process_tree_command(
+        tmp_path, late_delay=2.0
+    )
+    token = CancellationToken()
+    outcome = {}
+
+    def run_command():
+        try:
+            run_cancellable_process(
+                command,
+                cwd=tmp_path,
+                env=os.environ.copy(),
+                timeout=20,
+                shell=True,
+                cancellation_token=token,
+            )
+        except BaseException as exc:
+            outcome["error"] = exc
+
+    thread = threading.Thread(
+        target=run_command,
+        name="test-posix-cancellable-process",
+    )
+    thread.start()
+    assert wait_for_path(started)
+    token.cancel()
+    assert token.wait_for_acknowledgements(timeout=5)
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert wait_for_process_exit(read_pid(parent_pid_path))
+    assert wait_for_process_exit(read_pid(child_pid_path))
+    assert isinstance(outcome.get("error"), CancellationRequested)
+
+
+def test_windows_cancellation_acknowledgement_covers_job_tree(tmp_path):
+    if os.name != "nt":
+        return
+    command, parent_pid_path, child_pid_path, started, _ = process_tree_command(
+        tmp_path, late_delay=2.0
+    )
+    token = CancellationToken()
+    outcome = {}
+
+    def run_command():
+        try:
+            run_cancellable_process(
+                command,
+                cwd=tmp_path,
+                env=os.environ.copy(),
+                timeout=20,
+                shell=True,
+                cancellation_token=token,
+            )
+        except BaseException as exc:
+            outcome["error"] = exc
+
+    thread = threading.Thread(
+        target=run_command,
+        name="test-windows-cancellable-process",
+    )
+    thread.start()
+    assert wait_for_path(started)
+    token.cancel()
+    assert token.wait_for_acknowledgements(timeout=5)
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert wait_for_process_exit(read_pid(parent_pid_path))
+    assert wait_for_process_exit(read_pid(child_pid_path))
+    assert isinstance(outcome.get("error"), CancellationRequested)
 
 
 def test_shell_timeout_terminates_descendants_before_they_can_write(tmp_path):

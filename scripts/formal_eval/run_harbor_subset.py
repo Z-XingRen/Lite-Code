@@ -40,10 +40,20 @@ def build_command(
     agent: str,
     *,
     max_tasks: int = 0,
+    n_concurrent: int = 1,
+    agent_timeout_multiplier: float = 3.0,
+    environment_build_timeout_multiplier: float = 3.0,
+    task_ids: list[str] | None = None,
     artifact_root: Path = ARTIFACT_ROOT,
 ) -> tuple[list[str], Path]:
     if subset_name not in SUBSET_DIRS:
         raise ValueError(f"unknown subset: {subset_name}")
+    if n_concurrent < 1:
+        raise ValueError("n_concurrent must be at least 1")
+    if agent_timeout_multiplier <= 0:
+        raise ValueError("agent_timeout_multiplier must be positive")
+    if environment_build_timeout_multiplier <= 0:
+        raise ValueError("environment_build_timeout_multiplier must be positive")
     payload = json.loads(MANIFEST.read_text(encoding="utf-8"))
     subset = payload["subsets"][subset_name]
     output = artifact_root / SUBSET_DIRS[subset_name]
@@ -75,11 +85,15 @@ def build_command(
         "--n-attempts",
         "1",
         "--n-concurrent",
-        "1",
+        str(n_concurrent),
         "--max-retries",
         "0",
+        "--agent-timeout-multiplier",
+        str(agent_timeout_multiplier),
         "--agent-setup-timeout-multiplier",
         "3",
+        "--environment-build-timeout-multiplier",
+        str(environment_build_timeout_multiplier),
     ]
     if agent == "lite":
         command.extend(["--model", f"openai/{config.model}"])
@@ -87,6 +101,13 @@ def build_command(
         if hostname:
             command.extend(["--allow-agent-host", hostname])
     tasks = list(subset["tasks"])
+    if task_ids:
+        requested = set(task_ids)
+        available = {task["task_id"] for task in tasks}
+        unknown = sorted(requested - available)
+        if unknown:
+            raise ValueError(f"unknown task ids for {subset_name}: {unknown}")
+        tasks = [task for task in tasks if task["task_id"] in requested]
     if max_tasks > 0:
         tasks = tasks[:max_tasks]
     for task in tasks:
@@ -128,6 +149,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--subset", choices=sorted(SUBSET_DIRS), required=True)
     parser.add_argument("--agent", choices=("oracle", "lite"), required=True)
     parser.add_argument("--max-tasks", type=int, default=0)
+    parser.add_argument("--n-concurrent", type=int, default=1)
+    parser.add_argument("--agent-timeout-multiplier", type=float, default=3.0)
+    parser.add_argument("--environment-build-timeout-multiplier", type=float, default=3.0)
+    parser.add_argument("--task-id", action="append", default=[])
     parser.add_argument("--output-dir", default=str(ARTIFACT_ROOT))
     parser.add_argument("--preflight-only", action="store_true")
     args = parser.parse_args(argv)
@@ -146,6 +171,10 @@ def main(argv: list[str] | None = None) -> int:
         args.subset,
         args.agent,
         max_tasks=args.max_tasks,
+        n_concurrent=args.n_concurrent,
+        agent_timeout_multiplier=args.agent_timeout_multiplier,
+        environment_build_timeout_multiplier=args.environment_build_timeout_multiplier,
+        task_ids=args.task_id,
         artifact_root=artifact_root,
     )
     env = {
