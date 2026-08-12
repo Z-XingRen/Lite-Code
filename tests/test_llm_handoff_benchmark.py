@@ -1,11 +1,14 @@
 import json
 import subprocess
 import sys
+import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from lite.evaluation.context_cost import generate_report, run_paired_experiment
+from lite.evaluation import context_cost
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -247,8 +250,95 @@ def test_fixture_verifiers_pass_after_scripted_correct_state(tmp_path):
     assert all(row["verification_status"] == "passed" for row in payload["rows"])
 
 
+def test_long_session_row_timeout_cancels_turn_and_closes_agent(monkeypatch, tmp_path):
+    fixture = tmp_path / "fixture"
+    fixture.mkdir()
+    (fixture / "README.md").write_text("demo\n", encoding="utf-8")
+    ask_started = threading.Event()
+    ask_released = threading.Event()
+    run_finished = threading.Event()
+    lifecycle = {"aborted": False, "closed": False}
+
+    class BlockingAgent:
+        def __init__(self, **_kwargs):
+            self.current_run_dir = None
+            self.context_orchestrator = SimpleNamespace(
+                _compact_request=lambda _metadata, _snapshot: (None, None, None)
+            )
+
+        def record(self, _message):
+            return None
+
+        def ask(self, _prompt):
+            ask_started.set()
+            ask_released.wait()
+
+        def abort_current_turn(self):
+            lifecycle["aborted"] = True
+            ask_released.set()
+
+        def close(self):
+            lifecycle["closed"] = True
+
+    monkeypatch.setattr(context_cost, "Lite", BlockingAgent)
+    monkeypatch.setattr(
+        context_cost,
+        "run_verifier",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=0),
+    )
+    monkeypatch.setattr(
+        context_cost,
+        "extract_usage_from_artifacts",
+        lambda *_args, **_kwargs: "row",
+    )
+    task = {
+        "id": "timeout",
+        "fixture_repo": str(fixture),
+        "scripted_outputs": [],
+        "allowed_tools": [],
+        "step_budget": 1,
+        "row_timeout": 0,
+        "prompt": "block",
+        "verifier": "true",
+    }
+    result = []
+
+    def run_task():
+        try:
+            result.append(
+                context_cost._run_long_session_task(
+                    task,
+                    variant="full_orchestrator",
+                    repeat=0,
+                    mode="scripted",
+                    provider=None,
+                    provider_client_factory=None,
+                    output_dir=tmp_path / "work",
+                    pricing=context_cost.DEFAULT_PROXY_PRICING,
+                )
+            )
+        finally:
+            run_finished.set()
+
+    runner = threading.Thread(target=run_task)
+    runner.start()
+    assert ask_started.wait(2)
+    finished_without_external_release = run_finished.wait(1)
+    ask_released.set()
+    runner.join(2)
+
+    assert finished_without_external_release is True
+    assert result == ["row"]
+    assert lifecycle == {"aborted": True, "closed": True}
+
+
 def test_llm_handoff_benchmark_cli_scripted_smoke(tmp_path):
     output_dir = tmp_path / "artifacts"
+    tasks_path = tmp_path / "tasks.json"
+    tasks_path.write_text(
+        json.dumps({"tasks": _load_long_session_tasks()[:1]}),
+        encoding="utf-8",
+    )
     result = subprocess.run(
         [
             sys.executable,
@@ -258,7 +348,7 @@ def test_llm_handoff_benchmark_cli_scripted_smoke(tmp_path):
             "--output-dir",
             str(output_dir),
             "--tasks",
-            str(TASKS_PATH),
+            str(tasks_path),
         ],
         cwd=ROOT,
         capture_output=True,

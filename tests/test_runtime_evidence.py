@@ -2,6 +2,7 @@ import json
 
 import pytest
 from scripts import run_runtime_evidence as runtime_evidence_script
+from lite.evaluation import runtime_evidence
 
 from lite.evaluation.runtime_evidence import (
     CRASH_PHASES,
@@ -106,6 +107,51 @@ def test_journal_scaling_benchmark_reports_bounded_growth_and_correct_replay():
     assert [row["record_count"] for row in result["scenarios"]] == [20, 100, 200]
     assert all(row["state_correct"] for row in result["scenarios"])
     assert result["gates"]["passed"] is True
+
+
+def test_journal_scaling_recovery_uses_median_of_repeated_samples(monkeypatch):
+    clock_values = iter(
+        [
+            0.0,
+            0.001,
+            1.0,
+            1.015,
+            2.0,
+            2.001,
+            3.0,
+            3.001,
+            4.0,
+            4.001,
+            5.0,
+            5.003,
+            6.0,
+            6.003,
+            7.0,
+            7.001,
+        ]
+    )
+    monkeypatch.setattr(runtime_evidence.time, "perf_counter", lambda: next(clock_values))
+
+    result = run_journal_scaling_benchmark(
+        record_counts=(1, 2),
+        sample_window=1,
+        recovery_runs=3,
+    )
+
+    assert result["config"]["recovery_runs"] == 3
+    assert [row["recovery_timing"]["samples"] for row in result["scenarios"]] == [3, 3]
+    assert [row["recovery_ms"] for row in result["scenarios"]] == [1.0, 3.0]
+    assert result["headline"]["recovery_normalized_cost_ratio"] == 2.0
+    assert result["gates"]["recovery_normalized_cost_ratio_at_most_5"] is True
+
+
+def test_journal_scaling_rejects_non_positive_recovery_runs():
+    with pytest.raises(ValueError, match="recovery_runs must be positive"):
+        run_journal_scaling_benchmark(
+            record_counts=(1,),
+            sample_window=1,
+            recovery_runs=0,
+        )
 
 
 def test_runtime_evidence_cli_writes_all_artifacts(tmp_path):

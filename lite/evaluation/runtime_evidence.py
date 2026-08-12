@@ -562,13 +562,16 @@ def run_effect_recovery_matrix(*, repetitions=10, sync=True):
 
 
 def run_journal_scaling_benchmark(
-    *, record_counts=(1000, 5000, 10000), sample_window=500
+    *, record_counts=(1000, 5000, 10000), sample_window=500, recovery_runs=3
 ):
     """Measure online append and full recovery as journal history grows."""
 
     record_counts = _positive_integers(record_counts, "record_counts")
     if sample_window <= 0 or sample_window > min(record_counts):
         raise ValueError("sample_window must be in [1, min(record_counts)]")
+    recovery_runs = int(recovery_runs)
+    if recovery_runs <= 0:
+        raise ValueError("recovery_runs must be positive")
 
     with tempfile.TemporaryDirectory(prefix="lite-journal-scaling-") as temp_dir:
         root = Path(temp_dir)
@@ -593,20 +596,29 @@ def run_journal_scaling_benchmark(
 
                 writer.close()
                 current_bytes, peak_bytes = tracemalloc.get_traced_memory()
-                recovery_started = time.perf_counter()
-                recovered = SessionJournalWriter.open(journal_path, sync=False)
-                recovery_seconds = time.perf_counter() - recovery_started
-                state_correct = (
-                    len(recovered.state.session["history"]) == index
-                    and recovered.state.last_sequence == index + 1
-                    and recovered.state.session["history"][-1]["content"]
-                    == f"record-{index:06d}"
-                )
-                recovered.close()
+                recovery_samples = []
+                state_correct = True
+                for _ in range(recovery_runs):
+                    recovery_started = time.perf_counter()
+                    recovered = SessionJournalWriter.open(journal_path, sync=False)
+                    recovery_samples.append(
+                        time.perf_counter() - recovery_started
+                    )
+                    try:
+                        state_correct = state_correct and (
+                            len(recovered.state.session["history"]) == index
+                            and recovered.state.last_sequence == index + 1
+                            and recovered.state.session["history"][-1]["content"]
+                            == f"record-{index:06d}"
+                        )
+                    finally:
+                        recovered.close()
+                recovery_seconds = statistics.median(recovery_samples)
                 scenarios.append(
                     {
                         "record_count": index,
                         "append_window": timing_summary(recent),
+                        "recovery_timing": timing_summary(recovery_samples),
                         "recovery_ms": round(recovery_seconds * 1000, 3),
                         "recovery_us_per_record": round(
                             recovery_seconds * 1_000_000 / (index + 1), 3
@@ -653,6 +665,7 @@ def run_journal_scaling_benchmark(
         "config": {
             "record_counts": list(record_counts),
             "sample_window": sample_window,
+            "recovery_runs": recovery_runs,
         },
         "scenarios": scenarios,
         "headline": {

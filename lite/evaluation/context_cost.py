@@ -859,32 +859,39 @@ def _run_long_session_task(
     _seed_long_session_history(agent)
     _force_compact_summary_mode(agent, EXPERIMENT_VARIANTS[variant].get("compact_summary_mode", "deterministic"))
 
-    row_timeout = int(task.get("row_timeout", 300))
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(agent.ask, task["prompt"])
-        try:
-            future.result(timeout=row_timeout)
-        except concurrent.futures.TimeoutError:
-            pass
-    report_path = agent.current_run_dir / "report.json" if agent.current_run_dir else None
-    trace_path = agent.current_run_dir / "trace.jsonl" if agent.current_run_dir else None
-    verifier = run_verifier(
-        task["verifier"],
-        cwd=workspace,
-        timeout=30,
-    )
-    verification_status = "passed" if verifier.returncode == 0 else "failed"
-    return extract_usage_from_artifacts(
-        report_path,
-        trace_path,
-        task_id=task["id"],
-        layer=mode,
-        variant=variant,
-        repeat=repeat,
-        pricing=pricing,
-        verification_status=verification_status,
-        allow_verification_override=True,
-    )
+    try:
+        row_timeout = int(task.get("row_timeout", 300))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(agent.ask, task["prompt"])
+            try:
+                future.result(timeout=row_timeout)
+            except concurrent.futures.TimeoutError:
+                agent.abort_current_turn()
+        report_path = (
+            agent.current_run_dir / "report.json" if agent.current_run_dir else None
+        )
+        trace_path = (
+            agent.current_run_dir / "trace.jsonl" if agent.current_run_dir else None
+        )
+        verifier = run_verifier(
+            task["verifier"],
+            cwd=workspace,
+            timeout=30,
+        )
+        verification_status = "passed" if verifier.returncode == 0 else "failed"
+        return extract_usage_from_artifacts(
+            report_path,
+            trace_path,
+            task_id=task["id"],
+            layer=mode,
+            variant=variant,
+            repeat=repeat,
+            pricing=pricing,
+            verification_status=verification_status,
+            allow_verification_override=True,
+        )
+    finally:
+        agent.close()
 
 
 def _model_client_for_long_session_task(

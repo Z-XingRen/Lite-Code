@@ -6,6 +6,7 @@ from unittest.mock import patch
 from lite.testing import ScriptedModelClient, shell_join
 from lite import Lite, SessionStore, WorkspaceContext
 from lite import cli as lite_cli
+from lite.core.runtime_secrets import RuntimeSecretsMixin
 from lite.core.task_state import TaskState
 
 
@@ -25,6 +26,35 @@ def build_agent(tmp_path, outputs, **kwargs):
         approval_policy=approval_policy,
         **kwargs,
     )
+
+
+def test_nested_artifact_redaction_detects_secret_values_once():
+    class CountingSecrets(RuntimeSecretsMixin):
+        secret_env_names = set()
+
+        def __init__(self):
+            self.detection_calls = 0
+
+        def detected_secret_env_items(self):
+            self.detection_calls += 1
+            return [("LITE_TEST_SECRET", "nested-secret-value")]
+
+    secrets = CountingSecrets()
+
+    redacted = secrets.redact_artifact(
+        {
+            "message": "nested-secret-value",
+            "nested": {
+                "items": ["safe", "nested-secret-value"],
+            },
+        }
+    )
+
+    assert redacted == {
+        "message": "<redacted>",
+        "nested": {"items": ["safe", "<redacted>"]},
+    }
+    assert secrets.detection_calls == 1
 
 
 def test_workspace_escape_is_rejected(tmp_path):

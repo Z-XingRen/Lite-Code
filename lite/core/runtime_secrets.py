@@ -40,22 +40,54 @@ class RuntimeSecretsMixin:
         return {"secret_env_count": len(names), "secret_env_names": names}
 
     def redact_text(self, text):
+        secret_items = sorted(
+            self.detected_secret_env_items(),
+            key=lambda item: len(item[1]),
+            reverse=True,
+        )
+        return self._redact_text_with_items(text, secret_items)
+
+    @staticmethod
+    def _redact_text_with_items(text, secret_items):
         text = str(text)
-        for _, value in sorted(self.detected_secret_env_items(), key=lambda item: len(item[1]), reverse=True):
+        for _, value in secret_items:
             text = text.replace(value, REDACTED_VALUE)
         return text
 
     def redact_artifact(self, value, key=None):
+        secret_items = tuple(
+            sorted(
+                self.detected_secret_env_items(),
+                key=lambda item: len(item[1]),
+                reverse=True,
+            )
+        )
+        return self._redact_artifact(value, key=key, secret_items=secret_items)
+
+    def _redact_artifact(self, value, *, key, secret_items):
         if key and self.is_secret_env_name(key):
             return REDACTED_VALUE
         if isinstance(value, dict):
-            return {str(item_key): self.redact_artifact(item_value, key=item_key) for item_key, item_value in value.items()}
+            return {
+                str(item_key): self._redact_artifact(
+                    item_value,
+                    key=item_key,
+                    secret_items=secret_items,
+                )
+                for item_key, item_value in value.items()
+            }
         if isinstance(value, list):
-            return [self.redact_artifact(item, key=key) for item in value]
+            return [
+                self._redact_artifact(item, key=key, secret_items=secret_items)
+                for item in value
+            ]
         if isinstance(value, tuple):
-            return [self.redact_artifact(item, key=key) for item in value]
+            return [
+                self._redact_artifact(item, key=key, secret_items=secret_items)
+                for item in value
+            ]
         if isinstance(value, str):
-            return self.redact_text(value)
+            return self._redact_text_with_items(value, secret_items)
         return value
 
     def shell_env(self):
