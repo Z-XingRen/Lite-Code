@@ -1,8 +1,14 @@
 import copy
+import json
+from unittest.mock import patch
 
 from lite import Lite, SessionStore, WorkspaceContext
-from lite.core.prompt_cache_projection import PROJECTION_VERSION
+from lite.core.prompt_cache_projection import (
+    PROJECTION_VERSION,
+    _strip_projected_checkpoint_completions,
+)
 from lite.providers import ModelResult, ToolCall
+from lite.providers.clients import OpenAICompatibleModelClient
 from lite.testing import ScriptedModelClient
 
 
@@ -17,6 +23,58 @@ class CacheModelClient(ScriptedModelClient):
         self.context_window = 200_000
 
 
+class StreamingResponse:
+    headers = {"Content-Type": "text/event-stream"}
+
+    def __init__(self, text):
+        events = [
+            (
+                "response.output_text.delta",
+                {"type": "response.output_text.delta", "delta": text},
+            ),
+            (
+                "response.completed",
+                {
+                    "type": "response.completed",
+                    "response": {
+                        "status": "completed",
+                        "usage": {
+                            "input_tokens": 100,
+                            "input_tokens_details": {"cached_tokens": 80},
+                            "output_tokens": 10,
+                        },
+                    },
+                },
+            ),
+        ]
+        self._body = "".join(
+            f"event: {kind}\ndata: {json.dumps(payload)}\n\n"
+            for kind, payload in events
+        ).encode("utf-8") + b"data: [DONE]\n\n"
+        self._offset = 0
+        self.closed = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.close()
+        return False
+
+    def readline(self):
+        if self._offset >= len(self._body):
+            return b""
+        end = self._body.find(b"\n", self._offset) + 1
+        if end == 0:
+            end = len(self._body)
+        line = self._body[self._offset:end]
+        self._offset = end
+        return line
+
+    def close(self):
+        self.closed = True
+
+
 def build_agent(tmp_path, outputs):
     (tmp_path / "README.md").write_text("cache projection\n", encoding="utf-8")
     client = CacheModelClient(outputs)
@@ -28,6 +86,24 @@ def build_agent(tmp_path, outputs):
         auto_dream=False,
     )
     return agent, client
+
+
+def build_openai_agent(tmp_path, session_store=None):
+    (tmp_path / "README.md").write_text("cache projection\n", encoding="utf-8")
+    client = OpenAICompatibleModelClient(
+        model="gpt-5.6-terra",
+        base_url="https://gateway.example/v1",
+        api_key="sk-test",
+        temperature=None,
+        timeout=30,
+    )
+    return Lite(
+        model_client=client,
+        workspace=WorkspaceContext.build(tmp_path),
+        session_store=session_store or SessionStore(tmp_path / ".lite" / "sessions"),
+        approval_policy="auto",
+        auto_dream=False,
+    )
 
 
 def test_completed_turn_is_appended_to_next_provider_request(tmp_path):
@@ -170,6 +246,10 @@ def test_workspace_change_appends_context_refresh_without_reset(tmp_path):
     assert "latest workspace fact" in request.request_messages[-1]["content"]
     assert "Context refresh:" in request.request_messages[-1]["content"]
     assert "Transcript:" not in request.request_messages[-1]["content"]
+    assert (
+        json.dumps(request.request_messages, ensure_ascii=False).count("first answer")
+        == 1
+    )
 
     refreshed_messages = copy.deepcopy(request.request_messages)
     assert agent.ask("third request") == "third answer"
@@ -255,3 +335,72 @@ def test_projection_starts_new_generation_at_context_budget(tmp_path):
     assert agent.last_prompt_metadata["cache_projection_reason"] == "budget"
     assert agent.last_prompt_metadata["cache_projection_generation"] == 2
     assert len(client.requests[-1].request_messages) == 1
+
+
+def test_checkpoint_cleanup_does_not_remove_matching_user_content():
+    prompt = "\n".join(
+        [
+            "Task checkpoint:",
+            "- Completed: prior answer",
+            "- Summary: prior request",
+            "",
+            "Current user request:",
+            "- Completed: prior answer",
+        ]
+    )
+    state = {"messages": [{"role": "assistant", "content": "prior answer"}]}
+
+    cleaned = _strip_projected_checkpoint_completions(prompt, state)
+
+    assert cleaned.count("- Completed: prior answer") == 1
+    assert cleaned.endswith("Current user request:\n- Completed: prior answer")
+
+
+def test_openai_append_projection_reuses_payload_after_session_resume(tmp_path):
+    responses = [
+        StreamingResponse("<final>first answer</final>"),
+        StreamingResponse("<final>second answer</final>"),
+    ]
+    payloads = []
+
+    def fake_urlopen(request, timeout):
+        assert timeout == 30
+        payloads.append(json.loads(request.data.decode("utf-8")))
+        return responses.pop(0)
+
+    agent = build_openai_agent(tmp_path)
+    with patch("urllib.request.urlopen", fake_urlopen):
+        assert agent.ask("first request") == "<final>first answer</final>"
+        session_id = agent.session["id"]
+        resumed = Lite.from_session(
+            model_client=OpenAICompatibleModelClient(
+                model="gpt-5.6-terra",
+                base_url="https://gateway.example/v1",
+                api_key="sk-test",
+                temperature=None,
+                timeout=30,
+            ),
+            workspace=WorkspaceContext.build(tmp_path),
+            session_store=agent.session_store,
+            session_id=session_id,
+            approval_policy="auto",
+            auto_dream=False,
+        )
+        assert resumed.ask("second request") == "<final>second answer</final>"
+
+    first_input, second_input = payloads[0]["input"], payloads[1]["input"]
+    assert payloads[0]["prompt_cache_key"] == payloads[1]["prompt_cache_key"]
+    assert second_input[:2] == [
+        first_input[0],
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "output_text", "text": "<final>first answer</final>"}
+            ],
+        },
+    ]
+    second_text = json.dumps(second_input, ensure_ascii=False)
+    assert second_text.count("first answer") == 1
+    assert second_text.count("second request") == 1
+    assert resumed.last_prompt_metadata["cache_projection_reused"] is True
+    assert resumed.last_prompt_metadata["cache_projection_reason"] == "append"

@@ -2,6 +2,7 @@ from lite.testing import ScriptedModelClient
 from lite import Lite, SessionStore, WorkspaceContext
 from lite.core.context_report import ContextReportBuilder
 from lite.core.context_manager import ContextManager
+from lite.core.workspace import clip
 
 
 def build_workspace(tmp_path):
@@ -189,6 +190,17 @@ def test_context_manager_preserves_current_request_when_over_budget(tmp_path):
     assert prompt.split("Current user request:\n", 1)[1] == request
     assert metadata["current_request"]["text"] == request
     assert metadata["current_request"]["rendered_chars"] == len(request)
+
+
+def test_context_manager_does_not_repeat_clipped_current_request_in_memory(tmp_path):
+    agent = build_agent(tmp_path, [])
+    request = "investigate " + ("x" * 500)
+    agent.memory.set_task_summary(request)
+
+    prompt, _ = agent.context_manager.build(request)
+
+    assert prompt.count(request) == 1
+    assert f"- task: {clip(request, 300)}" not in prompt
 
 
 def test_context_manager_collapses_older_duplicate_reads_into_one_summary_line(tmp_path):

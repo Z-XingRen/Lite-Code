@@ -21,6 +21,7 @@ from .context_sections import (
     compute_section_budgets,
 )
 from .turn_history import TurnHistoryBuilder, tail_clip
+from .workspace import clip
 
 DEFAULT_TOTAL_BUDGET = 60000
 DEFAULT_SECTION_FLOORS = MIN_SECTION_BUDGETS
@@ -106,7 +107,10 @@ class ContextManager:
             memory_enabled = self.agent.feature_enabled("memory")
             relevant_memory_enabled = self.agent.feature_enabled("relevant_memory")
             context_reduction_enabled = self.agent.feature_enabled("context_reduction")
-        memory_text = "Memory:\n- disabled" if not memory_enabled else str(self.agent.memory_text())
+        memory_text = "Memory:\n- disabled" if not memory_enabled else str(
+            self.agent.memory_text()
+        )
+        memory_text = self._memory_text_for_request(memory_text, user_message)
         memory_contract = ""
         if memory_enabled and hasattr(self.agent, "memory_dir"):
             memory_contract = memorylib.build_memory_system_section(
@@ -446,6 +450,16 @@ class ContextManager:
             "prompt_cache_key": cache_key,
             "prompt_cache_prefix_chars": len(stable_prefix),
         }
+
+    @staticmethod
+    def _memory_text_for_request(memory_text, user_message):
+        """Avoid rendering the current request twice through working memory."""
+
+        summary_line = f"- task: {clip(str(user_message).strip(), 300)}"
+        lines = str(memory_text).splitlines()
+        return "\n".join(
+            "- task: -" if line == summary_line else line for line in lines
+        )
 
     def _metadata(self, prompt, rendered, budgets, reduction_log, selected_notes, user_message, section_texts, pressure=None):
         cache_metadata = self._prompt_cache_metadata(rendered)

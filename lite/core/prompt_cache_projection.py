@@ -36,6 +36,8 @@ def prepare_prompt_cache_turn(
         if context_refreshed
         else append_delta or full_prompt
     )
+    if not reason:
+        next_prompt = _strip_projected_checkpoint_completions(next_prompt, state)
     if not reason and _projection_exceeds_budget(agent, state, next_prompt):
         reason = "budget"
         context_refreshed = False
@@ -197,3 +199,32 @@ def _messages_chars(messages):
             sort_keys=True,
         )
     )
+
+
+def _strip_projected_checkpoint_completions(prompt, state):
+    """Avoid replaying finals already present in an append-only request chain."""
+
+    projected_finals = {
+        str(message.get("content", "")).strip()
+        for message in list(state.get("messages", []) or [])
+        if message.get("role") == "assistant"
+        and str(message.get("content", "")).strip()
+    }
+    if not projected_finals:
+        return str(prompt)
+    completed_prefix = "- Completed:"
+    in_checkpoint = False
+    lines = []
+    for line in str(prompt).splitlines():
+        if line == "Task checkpoint:":
+            in_checkpoint = True
+        elif in_checkpoint and not line.strip():
+            in_checkpoint = False
+        if (
+            in_checkpoint
+            and line.startswith(completed_prefix)
+            and line[len(completed_prefix) :].strip() in projected_finals
+        ):
+            continue
+        lines.append(line)
+    return "\n".join(lines).strip()
