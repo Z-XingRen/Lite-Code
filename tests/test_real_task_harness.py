@@ -9,6 +9,7 @@ import pytest
 from lite.evaluation.real_task_harness import (
     METRIC_FIELDS,
     load_manifest,
+    row_from_trial,
     result_matrix_keys,
     validate_result_matrix,
     write_results,
@@ -174,6 +175,70 @@ def test_real_task_results_write_jsonl_and_task_level_markdown(tmp_path):
     assert "task_success" in markdown
 
 
+def test_real_task_row_prefers_report_cache_projection_evidence(tmp_path):
+    _write_trial_evidence(
+        tmp_path,
+        report_projection={
+            "cache_projection_reused": True,
+            "cache_projection_reason": "append",
+            "cache_projection_generation": 2,
+            "cache_projection_message_count": 6,
+            "cache_projection_chars": 3000,
+            "cache_projection_context_refreshed": False,
+            "provider_prompt_chars": 700,
+        },
+        trace_projection={
+            "cache_projection_reused": False,
+            "cache_projection_reason": "missing",
+        },
+    )
+
+    row = row_from_trial(
+        {"id": "F01_pricing", "scenario": "single_file_bug"},
+        _trial(tmp_path),
+        variant="optimized",
+        repeat=0,
+    )
+
+    assert row["cache_projection_reused"] is True
+    assert row["cache_projection_reason"] == "append"
+    assert row["cache_projection_generation"] == 2
+    assert row["cache_projection_message_count"] == 6
+    assert row["cache_projection_chars"] == 3000
+    assert row["cache_projection_context_refreshed"] is False
+    assert row["provider_prompt_chars"] == 700
+
+
+def test_real_task_row_falls_back_to_trace_cache_projection_evidence(tmp_path):
+    _write_trial_evidence(
+        tmp_path,
+        trace_projection={
+            "cache_projection_reused": True,
+            "cache_projection_reason": "context_refresh",
+            "cache_projection_generation": 4,
+            "cache_projection_message_count": 10,
+            "cache_projection_chars": 5000,
+            "cache_projection_context_refreshed": True,
+            "provider_prompt_chars": 900,
+        },
+    )
+
+    row = row_from_trial(
+        {"id": "F01_pricing", "scenario": "single_file_bug"},
+        _trial(tmp_path),
+        variant="optimized",
+        repeat=0,
+    )
+
+    assert row["cache_projection_reused"] is True
+    assert row["cache_projection_reason"] == "context_refresh"
+    assert row["cache_projection_generation"] == 4
+    assert row["cache_projection_message_count"] == 10
+    assert row["cache_projection_chars"] == 5000
+    assert row["cache_projection_context_refreshed"] is True
+    assert row["provider_prompt_chars"] == 900
+
+
 def test_real_task_result_matrix_rejects_duplicate_and_unexpected_rows():
     expected = {
         ("F01_pricing", 0, "baseline"),
@@ -245,5 +310,48 @@ def _result_row(variant):
         "persistence_write_count": 2,
         "wall_time": 0.25,
         "final_stop_reason": "final_answer_returned",
+        "failure_category": "none",
+    }
+
+
+def _write_trial_evidence(
+    workspace, *, report_projection=None, trace_projection=None
+):
+    run_dir = workspace / ".lite" / "runs" / "run_1"
+    run_dir.mkdir(parents=True)
+    report = {
+        "status": "completed",
+        "stop_reason": "final_answer_returned",
+        "prompt_metadata": {"context_source": "session_projection"},
+    }
+    if report_projection is not None:
+        report["evidence_summaries"] = {
+            "context_budget_summary": report_projection
+        }
+    (run_dir / "report.json").write_text(
+        json.dumps(report), encoding="utf-8"
+    )
+    events = []
+    if trace_projection is not None:
+        events.append(
+            {
+                "event": "prompt_built",
+                "prompt_metadata": trace_projection,
+            }
+        )
+    (run_dir / "trace.jsonl").write_text(
+        "".join(json.dumps(event) + "\n" for event in events),
+        encoding="utf-8",
+    )
+
+
+def _trial(workspace):
+    return {
+        "workspace": str(workspace),
+        "scc": True,
+        "target_pass": True,
+        "regression_pass": True,
+        "scope_pass": True,
+        "usage": {},
         "failure_category": "none",
     }

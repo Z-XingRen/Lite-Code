@@ -20,6 +20,13 @@ METRIC_FIELDS = (
     "input_tokens",
     "cached_tokens",
     "billable_input_tokens",
+    "cache_projection_reused",
+    "cache_projection_reason",
+    "cache_projection_generation",
+    "cache_projection_message_count",
+    "cache_projection_chars",
+    "cache_projection_context_refreshed",
+    "provider_prompt_chars",
     "output_tokens",
     "tool_call_count",
     "duplicate_tool_result_count",
@@ -57,6 +64,7 @@ def row_from_trial(task, trial, *, variant, repeat):
 
     evidence = RunEvidence.latest(Path(trial["workspace"]))
     events = evidence.trace_events
+    projection = _cache_projection_from_evidence(evidence)
     usage = dict(trial.get("usage", {}) or {})
     model_calls = int(usage.get("model_call_count", 0) or 0)
     input_tokens = int(usage.get("input_tokens", 0) or 0)
@@ -81,6 +89,7 @@ def row_from_trial(task, trial, *, variant, repeat):
         "input_tokens": input_tokens,
         "cached_tokens": cached_tokens,
         "billable_input_tokens": max(0, input_tokens - cached_tokens),
+        **projection,
         "output_tokens": int(usage.get("output_tokens", 0) or 0),
         "tool_call_count": sum(
             event.get("event") == "tool_executed" for event in events
@@ -102,6 +111,52 @@ def row_from_trial(task, trial, *, variant, repeat):
         "errors": list(trial.get("errors", []) or []),
         "usage_source": str(usage.get("usage_source", "none")),
     }
+
+
+def _cache_projection_from_evidence(evidence):
+    """Read turn-level cache projection evidence with a trace fallback."""
+
+    summary = dict(
+        (evidence.report.get("evidence_summaries", {}) or {}).get(
+            "context_budget_summary", {}
+        )
+        or {}
+    )
+    report_metadata = dict(evidence.report.get("prompt_metadata", {}) or {})
+    trace_metadata = {}
+    for event in evidence.trace_events:
+        if event.get("event") == "prompt_built":
+            trace_metadata = dict(event.get("prompt_metadata", {}) or {})
+    values = {}
+    defaults = {
+        "cache_projection_reused": False,
+        "cache_projection_reason": "none",
+        "cache_projection_generation": 0,
+        "cache_projection_message_count": 0,
+        "cache_projection_chars": 0,
+        "cache_projection_context_refreshed": False,
+        "provider_prompt_chars": 0,
+    }
+    for key, default in defaults.items():
+        if key in summary:
+            values[key] = summary[key]
+        elif key in report_metadata:
+            values[key] = report_metadata[key]
+        else:
+            values[key] = trace_metadata.get(key, default)
+    values["cache_projection_reused"] = bool(values["cache_projection_reused"])
+    values["cache_projection_reason"] = str(values["cache_projection_reason"] or "none")
+    for key in (
+        "cache_projection_generation",
+        "cache_projection_message_count",
+        "cache_projection_chars",
+        "provider_prompt_chars",
+    ):
+        values[key] = int(values[key] or 0)
+    values["cache_projection_context_refreshed"] = bool(
+        values["cache_projection_context_refreshed"]
+    )
+    return values
 
 
 def result_matrix_keys(tasks, variants, repetitions):

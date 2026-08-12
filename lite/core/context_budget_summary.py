@@ -46,6 +46,7 @@ def context_budget_summary(metadata):
         "replacement_ledger_enabled": bool(orchestrator.get("replacement_ledger_enabled", False)),
         "saved_chars": _saved_chars(metadata, history, orchestrator),
         "cached_tokens": int(usage.get("cached_tokens", 0) or 0),
+        **_cache_projection_fields(metadata),
         "prompt_changed_by_phase_3": False,
     }
 
@@ -102,6 +103,24 @@ def update_from_completion(summary, event):
 def _compact_call_usage(orchestrator):
     usage = orchestrator.get("compact_call_usage")
     return dict(usage) if isinstance(usage, dict) else None
+
+
+def _cache_projection_fields(metadata):
+    return {
+        "cache_projection_reused": bool(metadata.get("cache_projection_reused", False)),
+        "cache_projection_reason": str(metadata.get("cache_projection_reason", "")),
+        "cache_projection_generation": int(
+            metadata.get("cache_projection_generation", 0) or 0
+        ),
+        "cache_projection_message_count": int(
+            metadata.get("cache_projection_message_count", 0) or 0
+        ),
+        "cache_projection_chars": int(metadata.get("cache_projection_chars", 0) or 0),
+        "cache_projection_context_refreshed": bool(
+            metadata.get("cache_projection_context_refreshed", False)
+        ),
+        "provider_prompt_chars": int(metadata.get("provider_prompt_chars", 0) or 0),
+    }
 
 
 def _compact_net_benefit(orchestrator, compact_call_usage):

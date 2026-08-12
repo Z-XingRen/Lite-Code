@@ -126,6 +126,16 @@ def test_completed_turn_is_appended_to_next_provider_request(tmp_path):
     assert agent.last_prompt_metadata["cache_projection_reused"] is True
     assert agent.last_prompt_metadata["cache_projection_message_count"] == 2
     assert agent.session["prompt_cache_projection"]["version"] == PROJECTION_VERSION
+    report = json.loads(
+        (agent.current_run_dir / "report.json").read_text(encoding="utf-8")
+    )
+    summary = report["evidence_summaries"]["context_budget_summary"]
+    assert summary["cache_projection_reused"] is True
+    assert summary["cache_projection_reason"] == "append"
+    assert summary["cache_projection_generation"] == 1
+    assert summary["cache_projection_message_count"] == 2
+    assert summary["cache_projection_chars"] > 0
+    assert summary["provider_prompt_chars"] > 0
 
 
 def test_tool_chain_is_persisted_once_and_reused_next_turn(tmp_path):
