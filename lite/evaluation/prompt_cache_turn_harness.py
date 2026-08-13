@@ -356,6 +356,7 @@ def write_results(
         json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
     )
     markdown_path = output_dir / "summary.md"
+    identity_digest = summary["evaluation_identity_sha256"] or "unbound"
     claimability = summary["claimability"]
     claimability_lines = [
         "## Claimability",
@@ -412,6 +413,8 @@ def write_results(
             "",
             f"Results SHA-256: `sha256:{digest}`",
             "",
+            f"Evaluation identity SHA-256: `{identity_digest}`",
+            "",
             *claimability_lines,
         ]
         text = "\n".join(lines)
@@ -431,6 +434,8 @@ def write_results(
                 f"Status: Complete, {matrix['completed_count']}/{matrix['expected_count']} result rows.",
                 "",
                 f"Results SHA-256: `sha256:{digest}`",
+                "",
+                f"Evaluation identity SHA-256: `{identity_digest}`",
                 "",
             ]
         )
@@ -549,8 +554,11 @@ def summarize_results(
     ordered = [dict(row) for row in rows]
     paired = paired_metrics(ordered)
     return {
-        "schema_version": "lite.prompt_cache_turn_summary.v8",
+        "schema_version": "lite.prompt_cache_turn_summary.v9",
         "results_sha256": str(results_digest),
+        "evaluation_identity_sha256": evaluation_identity_digest(
+            evaluation_identity
+        ),
         "matrix": dict(matrix or {}),
         "row_count": len(ordered),
         "overall": _aggregate_rows(ordered),
@@ -563,6 +571,20 @@ def summarize_results(
             evaluation_identity=evaluation_identity,
         ),
     }
+
+
+def evaluation_identity_digest(evaluation_identity):
+    """Hash the canonical evaluation identity without embedding its contents."""
+
+    if not evaluation_identity:
+        return ""
+    canonical = json.dumps(
+        dict(evaluation_identity),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def claimability_metrics(*, matrix, paired, evaluation_identity=None):

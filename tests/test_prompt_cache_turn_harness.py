@@ -6,6 +6,7 @@ import pytest
 from lite.evaluation.prompt_cache_turn_harness import (
     RESULT_FIELDS,
     VARIANTS,
+    evaluation_identity_digest,
     load_manifest,
     paired_metrics,
     result_matrix_keys,
@@ -178,15 +179,16 @@ def test_prompt_cache_smoke_summary_is_never_claimable(tmp_path):
     rows = _claim_rows(scenarios=("append",), repetitions=1)
     expected = result_matrix_keys([{"id": "append"}], VARIANTS, 1)
 
+    identity = {
+        "mode": "smoke",
+        "execution_order_policy": "fixed_control_first",
+    }
     paths = write_results(
         rows,
         tmp_path,
         expected_keys=expected,
         require_complete=True,
-        evaluation_identity={
-            "mode": "smoke",
-            "execution_order_policy": "fixed_control_first",
-        },
+        evaluation_identity=identity,
     )
 
     summary = json.loads(paths["summary"].read_text(encoding="utf-8"))
@@ -195,7 +197,28 @@ def test_prompt_cache_smoke_summary_is_never_claimable(tmp_path):
     assert "smoke_preflight_only" in claimability["claimability_reasons"]
     assert claimability["matrix_complete"] is True
     assert claimability["usage_completeness"] == 1.0
-    assert "Claimable: False" in paths["markdown"].read_text(encoding="utf-8")
+    identity_sha256 = evaluation_identity_digest(identity)
+    assert summary["evaluation_identity_sha256"] == identity_sha256
+    markdown = paths["markdown"].read_text(encoding="utf-8")
+    assert "Claimable: False" in markdown
+    assert identity_sha256 in markdown
+
+
+def test_prompt_cache_identity_digest_is_canonical():
+    first = {
+        "mode": "formal",
+        "scenario_ids": ["append", "session_resume"],
+        "provider": "openai",
+    }
+    reordered = {
+        "provider": "openai",
+        "scenario_ids": ["append", "session_resume"],
+        "mode": "formal",
+    }
+
+    assert evaluation_identity_digest(first) == evaluation_identity_digest(reordered)
+    assert evaluation_identity_digest(first).startswith("sha256:")
+    assert evaluation_identity_digest(None) == ""
 
 
 def test_prompt_cache_complete_formal_matrix_is_claimable(tmp_path):
