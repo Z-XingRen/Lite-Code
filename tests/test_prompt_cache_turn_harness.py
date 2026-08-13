@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -8,6 +9,7 @@ from lite.evaluation.prompt_cache_turn_harness import (
     load_manifest,
     result_matrix_keys,
     row_from_turns,
+    summarize_results,
     validate_result_matrix,
     write_results,
 )
@@ -95,6 +97,12 @@ def test_prompt_cache_result_matrix_and_summary_are_completeness_bound(tmp_path)
     paths = write_results([baseline], tmp_path, expected_keys=expected)
 
     assert paths["complete"] is False
+    assert paths["summary"].is_file()
+    partial_summary = json.loads(
+        paths["summary"].read_text(encoding="utf-8")
+    )
+    assert partial_summary["row_count"] == 1
+    assert partial_summary["matrix"]["complete"] is False
     incomplete = paths["markdown"].read_text(encoding="utf-8")
     assert "Incomplete" in incomplete
     assert "1/2 result rows" in incomplete
@@ -109,8 +117,55 @@ def test_prompt_cache_result_matrix_and_summary_are_completeness_bound(tmp_path)
         require_complete=True,
     )
     assert paths["complete"] is True
+    complete_summary = json.loads(
+        paths["summary"].read_text(encoding="utf-8")
+    )
+    assert complete_summary["matrix"]["complete"] is True
+    assert complete_summary["overall"]["row_count"] == 2
+    assert "append_projection" in complete_summary["by_variant"]
     markdown = paths["markdown"].read_text(encoding="utf-8")
     assert all(field in markdown for field in RESULT_FIELDS)
+
+
+def test_prompt_cache_summary_aggregates_rates_and_token_means():
+    rows = [
+        {
+            "variant": "append_projection",
+            "scenario": "append",
+            "behavior_pass": True,
+            "usage_complete": True,
+            "provider_cache_hit": True,
+            "prompt_cache_key_stable": True,
+            "cache_projection_reused": True,
+            "billable_input_tokens": 100,
+            "second_turn_cached_tokens": 80,
+        },
+        {
+            "variant": "append_projection",
+            "scenario": "workspace_refresh",
+            "behavior_pass": False,
+            "usage_complete": True,
+            "provider_cache_hit": False,
+            "prompt_cache_key_stable": True,
+            "cache_projection_reused": True,
+            "billable_input_tokens": 200,
+            "second_turn_cached_tokens": 0,
+        },
+    ]
+
+    summary = summarize_results(rows)
+
+    assert summary["overall"] == {
+        "row_count": 2,
+        "behavior_pass_rate": 0.5,
+        "usage_complete_rate": 1.0,
+        "provider_cache_hit_rate": 0.5,
+        "prompt_cache_key_stable_rate": 1.0,
+        "projection_reuse_rate": 1.0,
+        "mean_billable_input_tokens": 150.0,
+        "mean_second_turn_cached_tokens": 40.0,
+    }
+    assert summary["by_scenario"]["append"]["behavior_pass_rate"] == 1.0
 
 
 @pytest.mark.parametrize(

@@ -314,6 +314,16 @@ def write_results(rows, output_dir, *, expected_keys=None, require_complete=Fals
     jsonl_path = output_dir / "results.jsonl"
     _atomic_write_text(jsonl_path, jsonl_text)
     digest = hashlib.sha256(jsonl_text.encode("utf-8")).hexdigest()
+    summary = summarize_results(
+        ordered,
+        matrix=matrix,
+        results_digest=f"sha256:{digest}",
+    )
+    summary_path = output_dir / "summary.json"
+    _atomic_write_text(
+        summary_path,
+        json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+    )
     markdown_path = output_dir / "summary.md"
     if matrix is not None and not matrix["complete"]:
         text = (
@@ -322,7 +332,12 @@ def write_results(rows, output_dir, *, expected_keys=None, require_complete=Fals
             f"Results SHA-256: `sha256:{digest}`\n"
         )
         _atomic_write_text(markdown_path, text)
-        return {"jsonl": jsonl_path, "markdown": markdown_path, "complete": False}
+        return {
+            "jsonl": jsonl_path,
+            "summary": summary_path,
+            "markdown": markdown_path,
+            "complete": False,
+        }
 
     columns = ("scenario", "variant", "repeat", *RESULT_FIELDS)
     lines = ["# Prompt Cache Turn Evaluation", ""]
@@ -348,7 +363,77 @@ def write_results(rows, output_dir, *, expected_keys=None, require_complete=Fals
             + " |"
         )
     _atomic_write_text(markdown_path, "\n".join(lines) + "\n")
-    return {"jsonl": jsonl_path, "markdown": markdown_path, "complete": True}
+    return {
+        "jsonl": jsonl_path,
+        "summary": summary_path,
+        "markdown": markdown_path,
+        "complete": True,
+    }
+
+
+def summarize_results(rows, *, matrix=None, results_digest=""):
+    """Build machine-readable aggregate metrics without hiding raw rows."""
+
+    ordered = [dict(row) for row in rows]
+    return {
+        "schema_version": "lite.prompt_cache_turn_summary.v1",
+        "results_sha256": str(results_digest),
+        "matrix": dict(matrix or {}),
+        "row_count": len(ordered),
+        "overall": _aggregate_rows(ordered),
+        "by_variant": _aggregate_groups(ordered, "variant"),
+        "by_scenario": _aggregate_groups(ordered, "scenario"),
+    }
+
+
+def _aggregate_groups(rows, field):
+    groups = {}
+    for row in rows:
+        groups.setdefault(str(row.get(field, "")), []).append(row)
+    return {
+        key: _aggregate_rows(groups[key]) for key in sorted(groups)
+    }
+
+
+def _aggregate_rows(rows):
+    count = len(rows)
+    if not count:
+        return {
+            "row_count": 0,
+            "behavior_pass_rate": 0.0,
+            "usage_complete_rate": 0.0,
+            "provider_cache_hit_rate": 0.0,
+            "prompt_cache_key_stable_rate": 0.0,
+            "projection_reuse_rate": 0.0,
+            "mean_billable_input_tokens": 0.0,
+            "mean_second_turn_cached_tokens": 0.0,
+        }
+    return {
+        "row_count": count,
+        "behavior_pass_rate": _rate(rows, "behavior_pass"),
+        "usage_complete_rate": _rate(rows, "usage_complete"),
+        "provider_cache_hit_rate": _rate(rows, "provider_cache_hit"),
+        "prompt_cache_key_stable_rate": _rate(rows, "prompt_cache_key_stable"),
+        "projection_reuse_rate": _rate(rows, "cache_projection_reused"),
+        "mean_billable_input_tokens": _mean(rows, "billable_input_tokens"),
+        "mean_second_turn_cached_tokens": _mean(
+            rows, "second_turn_cached_tokens"
+        ),
+    }
+
+
+def _rate(rows, field):
+    return round(
+        sum(bool(row.get(field, False)) for row in rows) / len(rows),
+        6,
+    )
+
+
+def _mean(rows, field):
+    return round(
+        sum(float(row.get(field, 0) or 0) for row in rows) / len(rows),
+        6,
+    )
 
 
 def _atomic_write_text(path, content):
