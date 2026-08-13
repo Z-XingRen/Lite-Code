@@ -17,6 +17,7 @@ RESULT_FIELDS = (
     "usage_complete",
     "provider_cache_hit",
     "prompt_cache_key_stable",
+    "provider_prompt_cache_controls_enabled",
     "initial_projection_match",
     "model_call_count",
     "input_tokens",
@@ -100,6 +101,12 @@ def turn_evidence(workspace, run_id):
             int(item.get("output_tokens", 0) or 0) for item in completion_metadata
         ),
         "prompt_cache_key": str(metadata.get("prompt_cache_key", "")),
+        "provider_prompt_cache_controls_enabled": bool(
+            metadata.get("provider_prompt_cache_controls_enabled", False)
+        ),
+        "provider_prompt_cache_key": str(
+            metadata.get("provider_prompt_cache_key", "") or ""
+        ),
         "cache_projection_reused": bool(
             summary.get(
                 "cache_projection_reused",
@@ -195,9 +202,14 @@ def row_from_turns(scenario, turns, *, variant, repeat, errors=None):
         int(turn.get("duplicate_tool_result_count", 0) or 0) for turn in turns
     )
     prompt_cache_keys = [
-        str(turn.get("prompt_cache_key", "")) for turn in turns
+        str(turn.get("provider_prompt_cache_key", "")) for turn in turns
     ]
-    prompt_cache_key_stable = bool(prompt_cache_keys) and len(set(prompt_cache_keys)) == 1
+    prompt_cache_key_stable = bool(prompt_cache_keys) and all(
+        prompt_cache_keys
+    ) and len(set(prompt_cache_keys)) == 1
+    provider_prompt_cache_controls_enabled = bool(
+        second.get("provider_prompt_cache_controls_enabled", False)
+    )
     model_call_count = sum(
         int(turn.get("model_call_count", 0) or 0) for turn in turns
     )
@@ -218,6 +230,7 @@ def row_from_turns(scenario, turns, *, variant, repeat, errors=None):
             and model_call_count == 2
             and tool_call_count == 0
             and (not expected_reused or prompt_cache_key_stable)
+            and provider_prompt_cache_controls_enabled == expected_reused
             and len(turns) == 2
         ),
         "answer_match": answer_match,
@@ -228,6 +241,9 @@ def row_from_turns(scenario, turns, *, variant, repeat, errors=None):
         ),
         "provider_cache_hit": int(second.get("cached_tokens", 0) or 0) > 0,
         "prompt_cache_key_stable": prompt_cache_key_stable,
+        "provider_prompt_cache_controls_enabled": (
+            provider_prompt_cache_controls_enabled
+        ),
         "model_call_count": model_call_count,
         "input_tokens": input_tokens,
         "cached_tokens": cached_tokens,

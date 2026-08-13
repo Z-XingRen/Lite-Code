@@ -187,6 +187,31 @@ class Engine:
                     if key in request_context
                 }
             )
+            prompt_cache_enabled = bool(
+                getattr(agent.model_client, "supports_prompt_cache", False)
+                and agent.feature_enabled("prompt_cache")
+            )
+            prompt_cache_key = (
+                prompt_metadata.get("prompt_cache_key")
+                if prompt_cache_enabled
+                else None
+            )
+            prompt_cache_prefix_chars = (
+                (
+                    prompt_metadata.get("prompt_cache_prefix_chars")
+                    or prompt_metadata.get("sections", {})
+                    .get("prefix", {})
+                    .get("rendered_chars")
+                )
+                if prompt_cache_enabled
+                else None
+            )
+            prompt_metadata.update(
+                {
+                    "provider_prompt_cache_controls_enabled": prompt_cache_enabled,
+                    "provider_prompt_cache_key": prompt_cache_key,
+                }
+            )
             prompt_metadata["final_only"] = final_only
             if commit_proposed_replacements(agent.session, prompt_metadata):
                 agent.persist_session(replace_history=True)
@@ -272,7 +297,9 @@ class Engine:
                     "attempts": task_state.attempts,
                     "tool_steps": task_state.tool_steps,
                     "final_only": final_only,
-                    "prompt_cache_key": prompt_metadata.get("prompt_cache_key"),
+                    "prompt_cache_key": prompt_metadata.get(
+                        "provider_prompt_cache_key"
+                    ),
                 },
             )
             agent.session_event_bus.emit(
@@ -292,18 +319,7 @@ class Engine:
                 "final_only": final_only,
             }
 
-            prompt_cache_key = None
             prompt_cache_retention = None
-            prompt_cache_prefix_chars = None
-            if getattr(agent.model_client, "supports_prompt_cache", False):
-                prompt_cache_key = prompt_metadata.get("prompt_cache_key")
-                prompt_cache_prefix_chars = prompt_metadata.get(
-                    "prompt_cache_prefix_chars"
-                ) or (
-                    prompt_metadata.get("sections", {})
-                    .get("prefix", {})
-                    .get("rendered_chars")
-                )
 
             model_started_at = time.monotonic()
             try:

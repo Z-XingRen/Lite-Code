@@ -69,6 +69,7 @@ def test_prompt_cache_row_requires_expected_projection_and_clean_requests():
 
     assert row["behavior_pass"] is True
     assert row["initial_projection_match"] is True
+    assert row["provider_prompt_cache_controls_enabled"] is True
     assert row["usage_complete"] is True
     assert row["provider_cache_hit"] is True
     assert row["prompt_cache_key_stable"] is True
@@ -249,6 +250,7 @@ def test_prompt_cache_runner_full_prompt_control_disables_projection(
 
     assert row["behavior_pass"] is True
     assert row["initial_projection_match"] is True
+    assert row["provider_prompt_cache_controls_enabled"] is False
     assert row["cache_projection_reused"] is False
     assert row["cache_projection_reason"] == "unsupported"
 
@@ -302,6 +304,8 @@ def _turn(**overrides):
         "input_tokens": 100,
         "cached_tokens": 0,
         "prompt_cache_key": "key",
+        "provider_prompt_cache_controls_enabled": True,
+        "provider_prompt_cache_key": "key",
         "cache_projection_reused": False,
         "cache_projection_reason": "missing",
         "cache_projection_generation": 1,

@@ -2227,6 +2227,39 @@ def test_agent_passes_stable_prefix_cache_metadata_to_any_capable_provider(tmp_p
     assert client.cache_kwargs["prompt_cache_retention"] is None
 
 
+def test_prompt_cache_feature_flag_disables_provider_cache_metadata(tmp_path):
+    class CacheCapableScriptedModelClient(ScriptedModelClient):
+        def __init__(self, outputs):
+            super().__init__(outputs)
+            self.supports_prompt_cache = True
+            self.cache_kwargs = {}
+
+        def complete_result(self, request, max_new_tokens, **kwargs):
+            self.cache_kwargs = dict(kwargs)
+            return super().complete_result(request, max_new_tokens, **kwargs)
+
+    workspace = build_workspace(tmp_path)
+    client = CacheCapableScriptedModelClient(["<final>Done.</final>"])
+    agent = Lite(
+        model_client=client,
+        workspace=workspace,
+        session_store=SessionStore(tmp_path / ".lite" / "sessions"),
+        approval_policy="auto",
+        feature_flags={"prompt_cache": False},
+    )
+
+    assert agent.ask("Use a full prompt without provider caching") == "Done."
+
+    assert client.cache_kwargs["prompt_cache_key"] is None
+    assert client.cache_kwargs["prompt_cache_prefix_chars"] is None
+    assert client.cache_kwargs["prompt_cache_retention"] is None
+    assert (
+        agent.last_prompt_metadata["provider_prompt_cache_controls_enabled"]
+        is False
+    )
+    assert agent.last_prompt_metadata["provider_prompt_cache_key"] is None
+
+
 def test_recent_transcript_entries_stay_richer_than_older_ones(tmp_path):
     agent = build_agent(tmp_path, ["<final>Done.</final>"])
     old_text = "OLD-" + ("A" * 320)
