@@ -178,6 +178,7 @@ def test_prompt_cache_paired_metrics_compare_matched_rows_only():
             "scenario": "append",
             "repeat": 0,
             "variant": "full_prompt",
+            "pair_execution_order": "full_prompt_then_append_projection",
             "behavior_pass": True,
             "usage_complete": True,
             "billable_input_tokens": 7625,
@@ -187,6 +188,7 @@ def test_prompt_cache_paired_metrics_compare_matched_rows_only():
             "scenario": "append",
             "repeat": 0,
             "variant": "append_projection",
+            "pair_execution_order": "full_prompt_then_append_projection",
             "behavior_pass": True,
             "usage_complete": True,
             "billable_input_tokens": 1001,
@@ -207,6 +209,9 @@ def test_prompt_cache_paired_metrics_compare_matched_rows_only():
 
     assert paired["pair_count"] == 1
     assert paired["usage_complete_pair_count"] == 1
+    assert paired["control_first_pair_count"] == 1
+    assert paired["projection_first_pair_count"] == 0
+    assert paired["inconsistent_order_pair_count"] == 0
     assert paired["behavior_regression_count"] == 0
     assert paired["break_even_pair_count"] == 1
     assert paired["break_even_pair_rate"] == 1.0
@@ -223,6 +228,7 @@ def test_prompt_cache_paired_metrics_exclude_incomplete_usage_from_token_means()
                 "scenario": "append",
                 "repeat": 0,
                 "variant": "full_prompt",
+                "pair_execution_order": "append_projection_then_full_prompt",
                 "behavior_pass": True,
                 "usage_complete": True,
                 "billable_input_tokens": 100,
@@ -231,6 +237,7 @@ def test_prompt_cache_paired_metrics_exclude_incomplete_usage_from_token_means()
                 "scenario": "append",
                 "repeat": 0,
                 "variant": "append_projection",
+                "pair_execution_order": "append_projection_then_full_prompt",
                 "behavior_pass": False,
                 "usage_complete": False,
                 "billable_input_tokens": 20,
@@ -240,6 +247,7 @@ def test_prompt_cache_paired_metrics_exclude_incomplete_usage_from_token_means()
 
     assert paired["pair_count"] == 1
     assert paired["usage_complete_pair_count"] == 0
+    assert paired["projection_first_pair_count"] == 1
     assert paired["behavior_regression_count"] == 1
     assert paired["mean_billable_input_delta_tokens"] is None
     assert paired["mean_billable_input_delta_pct"] is None
@@ -382,8 +390,24 @@ def test_prompt_cache_identity_distinguishes_smoke_and_formal_modes():
     )
 
     assert smoke["mode"] == "smoke"
+    assert smoke["execution_order_policy"] == "fixed_control_first"
     assert formal["mode"] == "formal"
+    assert formal["execution_order_policy"] == "counterbalanced_v1"
     assert smoke != formal
+
+
+def test_prompt_cache_formal_variant_order_is_counterbalanced():
+    order = run_prompt_cache_turn_harness._variant_execution_order
+
+    assert order(VARIANTS, repeat=0, scenario_index=0, mode="formal") == VARIANTS
+    assert order(VARIANTS, repeat=0, scenario_index=1, mode="formal") == tuple(
+        reversed(VARIANTS)
+    )
+    assert order(VARIANTS, repeat=1, scenario_index=0, mode="formal") == tuple(
+        reversed(VARIANTS)
+    )
+    assert order(VARIANTS, repeat=1, scenario_index=1, mode="formal") == VARIANTS
+    assert order(VARIANTS, repeat=0, scenario_index=1, mode="smoke") == VARIANTS
 
 
 def test_prompt_cache_smoke_rejects_non_fixed_overrides(monkeypatch):

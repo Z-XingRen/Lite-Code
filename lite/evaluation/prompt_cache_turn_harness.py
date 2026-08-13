@@ -13,6 +13,8 @@ from .run_evidence import RunEvidence
 MANIFEST_PATH = Path("benchmarks/prompt_cache_turns_v1.json")
 VARIANTS = ("full_prompt", "append_projection")
 RESULT_FIELDS = (
+    "execution_position",
+    "pair_execution_order",
     "behavior_pass",
     "usage_complete",
     "provider_cache_hit",
@@ -373,6 +375,9 @@ def write_results(rows, output_dir, *, expected_keys=None, require_complete=Fals
             "",
             f"- Complete pairs: {paired['pair_count']}",
             f"- Usage-complete pairs: {paired['usage_complete_pair_count']}",
+            f"- Control-first pairs: {paired['control_first_pair_count']}",
+            f"- Projection-first pairs: {paired['projection_first_pair_count']}",
+            f"- Inconsistent-order pairs: {paired['inconsistent_order_pair_count']}",
             f"- Behavior regressions: {paired['behavior_regression_count']}",
             f"- Break-even pairs: {paired['break_even_pair_count']}",
             (
@@ -469,10 +474,18 @@ def paired_metrics(rows):
             and treatment.get("behavior_pass")
             and not behavior_regression
         )
+        control_order = str(control.get("pair_execution_order", ""))
+        treatment_order = str(treatment.get("pair_execution_order", ""))
+        execution_order_consistent = bool(
+            control_order and control_order == treatment_order
+        )
+        pair_execution_order = control_order if execution_order_consistent else ""
         pairs.append(
             {
                 "scenario": scenario,
                 "repeat": repeat,
+                "pair_execution_order": pair_execution_order,
+                "execution_order_consistent": execution_order_consistent,
                 "usage_complete": usage_complete,
                 "control_behavior_pass": bool(control.get("behavior_pass")),
                 "treatment_behavior_pass": bool(treatment.get("behavior_pass")),
@@ -497,6 +510,19 @@ def paired_metrics(rows):
     return {
         "pair_count": len(pairs),
         "usage_complete_pair_count": len(complete_usage),
+        "control_first_pair_count": sum(
+            pair["pair_execution_order"]
+            == "full_prompt_then_append_projection"
+            for pair in pairs
+        ),
+        "projection_first_pair_count": sum(
+            pair["pair_execution_order"]
+            == "append_projection_then_full_prompt"
+            for pair in pairs
+        ),
+        "inconsistent_order_pair_count": sum(
+            not pair["execution_order_consistent"] for pair in pairs
+        ),
         "behavior_regression_count": sum(
             pair["behavior_regression"] for pair in pairs
         ),

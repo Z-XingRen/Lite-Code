@@ -53,6 +53,11 @@ def build_identity(manifest, config, variants, repetitions, *, mode="formal"):
         "schema_version": "lite.prompt_cache_turn_identity.v1",
         "benchmark_id": manifest["benchmark_id"],
         "mode": str(mode),
+        "execution_order_policy": (
+            "fixed_control_first"
+            if mode == "smoke"
+            else "counterbalanced_v1"
+        ),
         "git_commit": _git_commit(),
         "runtime_source_sha256": _runtime_source_sha256(),
         "config_sha256": _file_sha256(ROOT / ".lite.toml"),
@@ -363,8 +368,15 @@ def main(argv=None):
         (row["scenario"], int(row["repeat"]), row["variant"]) for row in rows
     }
     for repeat in range(repetitions):
-        for scenario in scenarios:
-            for variant in variants:
+        for scenario_index, scenario in enumerate(scenarios):
+            execution_order = _variant_execution_order(
+                variants,
+                repeat=repeat,
+                scenario_index=scenario_index,
+                mode=mode,
+            )
+            pair_execution_order = "_then_".join(execution_order)
+            for execution_position, variant in enumerate(execution_order):
                 key = (scenario["id"], repeat, variant)
                 if key in completed:
                     continue
@@ -384,6 +396,12 @@ def main(argv=None):
                     config,
                     timeout=args.turn_timeout,
                 )
+                row.update(
+                    {
+                        "execution_position": execution_position,
+                        "pair_execution_order": pair_execution_order,
+                    }
+                )
                 assert_identity_unchanged(
                     identity,
                     selected_manifest,
@@ -402,6 +420,15 @@ def main(argv=None):
         require_complete=True,
     )
     return 0
+
+
+def _variant_execution_order(variants, *, repeat, scenario_index, mode):
+    variants = tuple(variants)
+    if mode == "smoke" or set(variants) != set(VARIANTS):
+        return variants
+    if (int(repeat) + int(scenario_index)) % 2:
+        return tuple(reversed(variants))
+    return variants
 
 
 def _select_scenarios(scenarios, scenario_ids):
