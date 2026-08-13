@@ -1,5 +1,6 @@
 import json
 
+from lite.core import run_store as run_store_module
 from lite.core.run_store import RunStore
 from lite.core.task_state import STOP_REASON_FINAL_ANSWER_RETURNED, TaskState
 
@@ -64,3 +65,31 @@ def test_run_store_tolerates_missing_final_report(tmp_path):
 
     assert store.trace_path(state.run_id).exists()
     assert not store.report_path(state.run_id).exists()
+
+
+def test_run_store_retries_transient_permission_error_during_atomic_replace(
+    tmp_path, monkeypatch
+):
+    store = RunStore(tmp_path / ".lite" / "runs")
+    state = TaskState.create(
+        run_id="run_retry",
+        task_id="task_retry",
+        user_request="Persist despite a transient sharing violation.",
+    )
+    real_replace = run_store_module.os.replace
+    calls = []
+
+    def flaky_replace(source, target):
+        calls.append((source, target))
+        if len(calls) == 1:
+            raise PermissionError("temporarily locked")
+        return real_replace(source, target)
+
+    monkeypatch.setattr(run_store_module.os, "replace", flaky_replace)
+    monkeypatch.setattr(run_store_module.time, "sleep", lambda _delay: None)
+
+    store.start_run(state)
+
+    assert len(calls) == 2
+    assert store.load_task_state(state.run_id)["task_id"] == "task_retry"
+    assert not list(store.root.glob(".tmp-*"))

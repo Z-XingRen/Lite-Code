@@ -4,19 +4,24 @@
 如何做参数校验，以及最终如何执行，都是在这里定义的。
 """
 
+import hashlib
 import json
 import os
 import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import textwrap
+from contextlib import contextmanager
 from functools import partial
+from pathlib import Path
 
 from pydantic import ValidationError
 
 from ..core.verification import (
     VERIFICATION_RECEIPT_SCHEMA,
+    _contains_shell_control_operator,
     classify_verification_command,
     workspace_revision,
 )
@@ -122,8 +127,10 @@ BASE_TOOL_SPECS = {
             "Run project verification in the workspace root and return a structured "
             "VerificationReceipt. On Windows the default Python verification uses "
             "the current interpreter (python -m pytest -q), avoiding pytest launcher "
-            "path/import problems. Provide command only when the project needs a "
-            "different test, lint, build, or typecheck command."
+            "path/import problems. A custom command must be one direct executable, "
+            "without shell pipes, redirection, or command chaining. Provide command "
+            "only when the project needs a different test, lint, build, or typecheck "
+            "command."
         ),
     },
     "write_file": {
@@ -335,8 +342,28 @@ def tool_verify(agent, args):
         agent.path(path).relative_to(agent.root).as_posix()
         for path in args.get("covered_paths", [])
     ]
-    result = _run_workspace_command(agent, command, args, timeout)
+    with _verification_workspace(agent) as (verification_root, backup_root, before):
+        result = _run_workspace_command(
+            agent,
+            _verification_argv(command),
+            args,
+            timeout,
+            shell=False,
+            cwd=verification_root,
+        )
+        scope_violations = _verification_scope_violations(
+            agent, verification_root, backup_root, before
+        )
     exit_code = int(result.returncode)
+    stderr = result.stderr
+    if scope_violations:
+        exit_code = exit_code or 126
+        detail = "verify write_scope violation: " + ", ".join(scope_violations)
+        stderr = f"{stderr.rstrip()}\n{detail}".strip()
+        agent.session_event_bus.emit(
+            "scope_violation",
+            {"tool_name": "verify", "affected_paths": scope_violations},
+        )
     changed_paths = list(
         getattr(getattr(agent, "current_task_state", None), "changed_paths", []) or []
     )
@@ -361,6 +388,8 @@ def tool_verify(agent, args):
     }
     agent._pending_tool_result_metadata = {
         "verification_receipt": receipt,
+        "security_event_type": "scope_violation" if scope_violations else "",
+        "write_scope_violation_paths": scope_violations,
     }
     return textwrap.dedent(
         f"""\
@@ -370,34 +399,209 @@ def tool_verify(agent, args):
         stdout:
         {result.stdout.strip() or "(empty)"}
         stderr:
-        {result.stderr.strip() or "(empty)"}
+        {stderr.strip() or "(empty)"}
         """
     ).strip()
 
 
-def _run_workspace_command(agent, command, args, timeout):
+def _run_workspace_command(agent, command, args, timeout, *, shell=True, cwd=None):
+    cwd = Path(cwd or agent.root)
+    env = agent.shell_env()
+    env["PWD"] = str(cwd)
     runner = getattr(agent, "sandbox_runner", None)
     if runner is None:
         return run_cancellable_process(
             command,
-            cwd=agent.root,
-            shell=True,
+            cwd=cwd,
+            shell=shell,
             timeout=timeout,
             # 这里传入的是过滤后的环境变量，而不是直接继承整个父 shell 环境，
             # 目的是减少敏感信息被意外带进命令执行环境的风险。
-            env=agent.shell_env(),
+            env=env,
             cancellation_token=getattr(agent, "current_cancellation_token", None),
         )
     return runner.run(
         command,
-        cwd=agent.root,
-        env=agent.shell_env(),
+        cwd=cwd,
+        env=env,
         timeout=timeout,
         cancellation_token=getattr(agent, "current_cancellation_token", None),
         network_access=args.get("network_access"),
         additional_readonly_paths=args.get("additional_readonly_paths", ()),
         additional_writable_paths=args.get("additional_writable_paths", ()),
+        shell=shell,
     )
+
+
+@contextmanager
+def _verification_workspace(agent):
+    if not getattr(agent, "write_scope", ()):
+        yield agent.root, None, None
+        return
+    symlinks = _workspace_symlinks(agent.root)
+    if symlinks:
+        raise ValueError(
+            "verify with write_scope does not support workspace symlinks: "
+            + ", ".join(symlinks[:5])
+        )
+    with tempfile.TemporaryDirectory(prefix="lite-verify-") as temp_dir:
+        backup_root = Path(temp_dir) / "backup"
+        shutil.copytree(
+            agent.root,
+            backup_root,
+            ignore=shutil.ignore_patterns(*IGNORED_PATH_NAMES),
+        )
+        isolated_root = Path(temp_dir) / "workspace"
+        shutil.copytree(backup_root, isolated_root)
+        before = _verification_snapshot(backup_root)
+        yield isolated_root, backup_root, before
+
+
+def _verification_scope_violations(agent, root, backup_root, before):
+    if before is None:
+        return []
+    after = _verification_snapshot(root)
+    isolated_changes = [
+        path
+        for path in sorted(set(before) | set(after))
+        if before.get(path) != after.get(path)
+    ]
+    live_changes = _verification_live_changes(agent, before)
+    live_violations = [
+        path for path in live_changes if not _write_scope_allows(agent, path)
+    ]
+    if live_violations:
+        _restore_verification_changes(agent.root, backup_root, live_violations)
+    outside_scope = [
+        path for path in isolated_changes if not _write_scope_allows(agent, path)
+    ]
+    return sorted(set(outside_scope) | set(live_violations))
+
+
+def _verification_live_changes(agent, before):
+    live_after = _verification_snapshot(agent.root)
+    return [
+        path
+        for path in sorted(set(before) | set(live_after))
+        if before.get(path) != live_after.get(path)
+    ]
+
+
+def _verification_snapshot(root):
+    snapshot = {}
+    root = Path(root)
+    for current, dir_names, file_names in os.walk(root, topdown=True):
+        current = Path(current)
+        kept_dirs = []
+        for name in sorted(dir_names):
+            if name in IGNORED_PATH_NAMES:
+                continue
+            path = current / name
+            relative = path.relative_to(root).as_posix()
+            if path.is_symlink():
+                snapshot[relative] = "symlink:" + os.readlink(path)
+                continue
+            snapshot[relative] = "directory"
+            kept_dirs.append(name)
+        dir_names[:] = kept_dirs
+        for name in sorted(file_names):
+            if name in IGNORED_PATH_NAMES:
+                continue
+            path = current / name
+            relative = path.relative_to(root).as_posix()
+            if path.is_symlink():
+                snapshot[relative] = "symlink:" + os.readlink(path)
+            else:
+                snapshot[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return snapshot
+
+
+def _restore_verification_changes(root, backup_root, paths):
+    for relative_path in paths:
+        target = root / Path(relative_path)
+        source = backup_root / Path(relative_path)
+        if target.is_dir():
+            shutil.rmtree(target)
+        elif target.exists() or target.is_symlink():
+            target.unlink()
+        if source.is_file():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+        elif source.is_dir():
+            target.mkdir(parents=True, exist_ok=True)
+
+
+def _workspace_symlinks(root):
+    root = Path(root)
+    symlinks = []
+    for current, dir_names, file_names in os.walk(root, topdown=True):
+        current = Path(current)
+        kept_dirs = []
+        for name in sorted(dir_names):
+            if name in IGNORED_PATH_NAMES:
+                continue
+            path = current / name
+            if path.is_symlink():
+                symlinks.append(path.relative_to(root).as_posix())
+            else:
+                kept_dirs.append(name)
+        dir_names[:] = kept_dirs
+        for name in sorted(file_names):
+            path = current / name
+            if name not in IGNORED_PATH_NAMES and path.is_symlink():
+                symlinks.append(path.relative_to(root).as_posix())
+    return symlinks
+
+
+def _write_scope_allows(agent, relative_path):
+    requested = agent.path(relative_path)
+    for raw_scope in agent.write_scope:
+        scope = agent.path(raw_scope)
+        try:
+            requested.relative_to(scope)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
+def _verification_argv(command):
+    if _contains_shell_control_operator(command):
+        raise ValueError(
+            "verify.command must be one direct verification command without "
+            "shell control operators"
+        )
+    try:
+        argv = shlex.split(str(command), posix=os.name != "nt")
+    except ValueError as exc:
+        raise ValueError(f"invalid verify.command quoting: {exc}") from exc
+    if not argv:
+        raise ValueError("verify.command must not be empty")
+    argv[0] = str(_resolve_verification_executable(argv[0]))
+    if os.name == "nt":
+        argv[1:] = [
+            token[1:-1]
+            if len(token) >= 2 and token[0] == token[-1] and token[0] in {'"', "'"}
+            else token
+            for token in argv[1:]
+        ]
+    return argv
+
+
+def _resolve_verification_executable(raw):
+    executable = str(raw).strip().strip('"\'')
+    path = Path(executable)
+    if path.is_absolute():
+        return path
+    resolved = shutil.which(executable)
+    if resolved:
+        return Path(resolved)
+    if os.name == "nt" and not path.suffix:
+        for suffix in (".exe", ".cmd", ".bat"):
+            resolved = shutil.which(executable + suffix)
+            if resolved:
+                return Path(resolved)
+    return path
 
 
 def _format_command_result(result):

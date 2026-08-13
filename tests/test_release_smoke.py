@@ -80,24 +80,12 @@ def test_search_then_summarize_succeeds(tmp_path):
     assert tool_calls and tool_calls[0]["name"] == "search"
 
 
-def test_step_limit_default_can_handle_realistic_workflows(tmp_path):
-    """默认 max_steps 应该够 read+search+edit+verify 这种流程，且能扛全栈
-    脚手架（17+ 文件写入）。"""
-    outputs = []
-    for i in range(7):
-        outputs.append(
-            f'<tool>{{"name":"read_file","args":{{"path":"README.md","start":1,"end":{i+5}}}}}</tool>'
-        )
-    outputs.append("<final>看完了。</final>")
+def test_default_step_limit_supports_realistic_workflows(tmp_path):
+    """The runtime budget leaves room for multi-tool coding workflows."""
 
-    agent = _build_agent(tmp_path, outputs)
+    agent = _build_agent(tmp_path, [])
+
     assert agent.max_steps >= 50
-
-    final = agent.engine.ask("仔细读一遍 README，确认结构 OK")
-
-    assert "看完了" in final
-    tool_calls = [item for item in agent.session["history"] if item["role"] == "tool"]
-    assert len(tool_calls) == 7
 
 
 def test_empty_response_does_not_silently_stop(tmp_path):

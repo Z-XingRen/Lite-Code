@@ -215,6 +215,8 @@ def _git_workspace_revision(root):
 
 
 def classify_verification_command(command):
+    if _contains_shell_control_operator(command):
+        return ""
     try:
         tokens = shlex.split(str(command), posix=os.name != "nt")
     except ValueError:
@@ -267,3 +269,28 @@ def _is_python_command(command):
     return command in {"python", "python3"} or (
         suffix != command and suffix.replace(".", "").isdigit()
     )
+
+
+def _contains_shell_control_operator(command):
+    quote = ""
+    escaped = False
+    text = str(command)
+    for index, char in enumerate(text):
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\" and quote != "'":
+            escaped = True
+            continue
+        if quote:
+            if char == quote:
+                quote = ""
+            continue
+        if char in {'"', "'"}:
+            quote = char
+            continue
+        if char in {";", "|", "&", ">", "<", "`", "\n", "\r"}:
+            return True
+        if char == "$" and index + 1 < len(text) and text[index + 1] == "(":
+            return True
+    return False

@@ -14,7 +14,7 @@ from lite.core.tool_result_artifacts import (
     DEFAULT_TOOL_OUTPUT_LIMITS,
     prepare_tool_result_observation,
 )
-from lite.testing import ScriptedModelClient, shell_join
+from lite.testing import ScriptedModelClient, read_jsonl, shell_join
 from lite.tools.base import RegisteredTool
 
 
@@ -29,10 +29,6 @@ def build_agent(tmp_path, outputs=None, **kwargs):
         approval_policy="auto",
         **kwargs,
     )
-
-
-def read_jsonl(path):
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
 def prepare_observation(tmp_path, name, full_result):

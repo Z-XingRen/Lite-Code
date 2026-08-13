@@ -2,7 +2,9 @@ import json
 import threading
 import time
 
-from lite.testing import ScriptedModelClient
+import pytest
+
+from lite.testing import ScriptedModelClient, read_jsonl
 from lite import Lite, SessionStore, WorkspaceContext
 
 
@@ -21,14 +23,6 @@ def build_agent(tmp_path, outputs, **kwargs):
         approval_policy="auto",
         **kwargs,
     )
-
-
-def read_jsonl(path):
-    return [
-        json.loads(line)
-        for line in path.read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
 
 
 class BlockingModelClient:
@@ -324,6 +318,39 @@ def test_worker_without_write_scope_cannot_modify_workspace(tmp_path):
     assert agent.ask("try an unscoped worker") == "Worker respected missing scope."
 
     assert not (tmp_path / "notes" / "out.txt").exists()
+
+
+def test_worker_scope_is_narrowed_to_parent_runtime_scope(tmp_path):
+    agent = build_agent(
+        tmp_path,
+        [],
+        write_scope=["notes/summary.md"],
+    )
+
+    task = agent.worker_manager._new_task(
+        "Write notes",
+        "worker",
+        ["notes"],
+        defer_runtime=True,
+    )
+
+    assert task.write_scope == ("notes/summary.md",)
+
+
+def test_worker_scope_outside_parent_runtime_scope_is_rejected(tmp_path):
+    agent = build_agent(
+        tmp_path,
+        [],
+        write_scope=["src/app.py"],
+    )
+
+    with pytest.raises(ValueError, match="outside the parent write_scope"):
+        agent.worker_manager._new_task(
+            "Write tests",
+            "worker",
+            ["tests"],
+            defer_runtime=True,
+        )
 
 
 def test_plan_mode_cannot_continue_write_capable_worker(tmp_path):

@@ -6,8 +6,10 @@ files, so recovery state and review evidence stay separate.
 """
 
 import json
+import os
 import tempfile
 import threading
+import time
 from pathlib import Path
 
 
@@ -114,12 +116,28 @@ class RunStore:
                 "w",
                 encoding="utf-8",
                 delete=False,
-                # Keep the temporary path short on Windows. It only needs to
-                # share the filesystem with the destination for atomic replace.
-                dir=str(self.root),
+                # A sibling temporary file keeps replacement atomic and avoids
+                # Windows cross-directory sharing/rename edge cases.
+                dir=str(path.parent),
                 prefix=".tmp-",
             ) as handle:
                 json.dump(payload, handle, indent=2, sort_keys=True)
                 handle.write("\n")
                 temp_name = handle.name
-            Path(temp_name).replace(path)
+            try:
+                _replace_with_retry(temp_name, path)
+            finally:
+                Path(temp_name).unlink(missing_ok=True)
+
+
+def _replace_with_retry(source, target, *, attempts=5, delay=0.01):
+    """Retry transient Windows sharing violations without weakening atomicity."""
+
+    for attempt in range(attempts):
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError:
+            if attempt + 1 >= attempts:
+                raise
+            time.sleep(delay * (attempt + 1))

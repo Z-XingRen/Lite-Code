@@ -57,11 +57,30 @@ python_version = "3.10"
 files = [
   "lite/features/sandbox/config.py",
   "lite/features/sandbox/checker.py",
+  "lite/core/runtime.py",
+  "lite/core/run_store.py",
+  "lite/core/tool_execution.py",
+  "lite/core/worker_inputs.py",
+  "lite/core/worker_manager.py",
 ]
 strict = true
 follow_imports = "skip"
 pretty = true
 show_error_codes = true
+
+[[tool.mypy.overrides]]
+module = [
+  "lite.core.runtime",
+  "lite.core.run_store",
+  "lite.core.tool_execution",
+  "lite.core.worker_inputs",
+  "lite.core.worker_manager",
+]
+allow_untyped_defs = true
+allow_untyped_calls = true
+allow_any_generics = true
+allow_subclassing_any = true
+check_untyped_defs = true
 
 [tool.coverage.run]
 branch = true

@@ -1,7 +1,5 @@
-import json
-
 from lite import Lite, SessionStore, WorkspaceContext
-from lite.testing import ScriptedModelClient
+from lite.testing import ScriptedModelClient, read_jsonl
 
 
 def build_agent(tmp_path, outputs):
@@ -14,14 +12,6 @@ def build_agent(tmp_path, outputs):
         session_store=store,
         approval_policy="auto",
     )
-
-
-def read_jsonl(path):
-    return [
-        json.loads(line)
-        for line in path.read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
 
 
 def test_retrieval_trace_event_records_selected_and_rejected_without_prompt_leak(tmp_path):

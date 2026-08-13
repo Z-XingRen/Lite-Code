@@ -1,7 +1,7 @@
 import json
 
 from lite import Lite, SessionStore, WorkspaceContext
-from lite.testing import ScriptedModelClient
+from lite.testing import ScriptedModelClient, read_jsonl
 
 
 def build_agent(tmp_path, outputs=None):
@@ -12,10 +12,6 @@ def build_agent(tmp_path, outputs=None):
         session_store=SessionStore(tmp_path / ".lite" / "sessions"),
         approval_policy="auto",
     )
-
-
-def read_jsonl(path):
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
 def test_real_turn_emits_context_orchestrator_decision_and_report_metadata(tmp_path):

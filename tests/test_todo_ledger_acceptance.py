@@ -2,7 +2,7 @@
 
 import json
 
-from lite.testing import ScriptedModelClient
+from lite.testing import ScriptedModelClient, read_jsonl
 from lite import Lite, SessionStore, WorkspaceContext
 
 
@@ -16,10 +16,6 @@ def build_agent(tmp_path, outputs=None, **kwargs):
         approval_policy="auto",
         **kwargs,
     )
-
-
-def read_jsonl(path):
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
 def test_todo_tools_persist_state_and_emit_session_events(tmp_path):

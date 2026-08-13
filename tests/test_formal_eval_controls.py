@@ -67,6 +67,14 @@ def test_formal_prompts_fully_state_graded_data_contracts():
             {"scc": False, "grader": {"grader_returncode": 2}},
             "grader_infrastructure_error",
         ),
+        (
+            {
+                "scc": False,
+                "grader": {"grader_returncode": 1},
+                "target_pass": False,
+            },
+            "target_verifier_failed",
+        ),
         ({"scc": False, "target_pass": False}, "target_verifier_failed"),
         (
             {
@@ -84,6 +92,87 @@ def test_formal_failure_categories_separate_runtime_and_agent_failures(
     row, expected
 ):
     assert run_lite_quality_v1.classify_trial_failure(row) == expected
+
+
+def test_formal_runner_enforces_expected_changed_paths_as_write_scope():
+    source = Path(run_lite_quality_v1.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    lite_calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "Lite"
+    ]
+
+    assert any(
+        any(
+            keyword.arg == "write_scope"
+            and ast.unparse(keyword.value) == "task['expected_changed_paths']"
+            for keyword in call.keywords
+        )
+        for call in lite_calls
+    )
+
+
+def test_formal_runner_replaces_unrestricted_shell_with_verify():
+    tools = run_lite_quality_v1.evaluation_allowed_tools(
+        {
+            "allowed_tools": [
+                "read_file",
+                "patch_file",
+                "run_shell",
+                "verify",
+            ]
+        }
+    )
+
+    assert "run_shell" not in tools
+    assert tools.count("verify") == 1
+
+
+def test_r01_grader_accepts_semantic_checkpoint_note(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "src" / "service.py").write_text(
+        "def request(client, timeout_ms):\n"
+        "    return client.get(timeout=timeout_ms / 1000)\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "tests" / "test_service.py").write_text(
+        "from src.service import request\n\n"
+        "class C:\n"
+        "    def get(self, **kwargs): return kwargs\n\n"
+        "def test_request():\n"
+        "    assert request(C(), 2500)['timeout'] == 2.5\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "TODO.md").write_text(
+        "Converted request timeouts from milliseconds to seconds and ran regression tests.\n",
+        encoding="utf-8",
+    )
+
+    result = run_lite_quality_v1.grade_task("R01_incident_fix", tmp_path)
+
+    assert result["target_pass"] is True
+    assert result["regression_pass"] is True
+    assert result["grader_returncode"] == 0
+    assert result["grader_infrastructure_error"] is False
+
+    (tmp_path / "TODO.md").unlink()
+    failed = run_lite_quality_v1.grade_task("R01_incident_fix", tmp_path)
+
+    assert failed["target_pass"] is False
+    assert failed["regression_pass"] is True
+    assert failed["grader_returncode"] == 1
+    assert failed["grader_infrastructure_error"] is False
+    assert (
+        run_lite_quality_v1.classify_trial_failure(
+            {"scc": False, "target_pass": False, "grader": failed}
+        )
+        == "target_verifier_failed"
+    )
 
 
 def test_harbor_command_uses_toml_model_and_bounded_subset(tmp_path, monkeypatch):

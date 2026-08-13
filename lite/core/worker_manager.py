@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 
 from .worker_cancellation import WorkerCancellationMixin
 from .worker_execution import run_background_worker, run_worker
-from .worker_inputs import clean_worker_type, clean_write_scope
+from .worker_inputs import clean_worker_type, constrain_write_scope
 from .worker_runtime import build_child_runtime
 from .workspace import now
 
@@ -31,7 +31,7 @@ class WorkerManager(WorkerCancellationMixin):
         self.runtime.session.setdefault("workers", {"next_id": 1, "items": []})
         self._tasks = {}
         self._lock = threading.Lock()
-        self._notifications = queue.Queue()
+        self._notifications: queue.Queue[tuple[str, dict]] = queue.Queue()
 
     @property
     def state(self):
@@ -98,7 +98,7 @@ class WorkerManager(WorkerCancellationMixin):
         with self._lock:
             worker_id = f"agent_{int(self.state.get('next_id', 1))}"
             self.state["next_id"] = int(self.state.get("next_id", 1)) + 1
-        scope = tuple(clean_write_scope(write_scope))
+        scope = tuple(constrain_write_scope(self.runtime, write_scope))
         child = (
             None
             if defer_runtime

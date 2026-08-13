@@ -6,7 +6,7 @@ from lite import Lite, SessionStore, WorkspaceContext
 from lite.core.task_state import TaskState
 from lite.core.turn_transitions import emit_terminal_transition
 from lite.providers import ProviderError
-from lite.testing import ScriptedModelClient
+from lite.testing import ScriptedModelClient, read_jsonl
 
 
 def build_agent(tmp_path, outputs, **kwargs):
@@ -21,14 +21,6 @@ def build_agent(tmp_path, outputs, **kwargs):
         approval_policy="auto",
         **kwargs,
     )
-
-
-def read_jsonl(path):
-    return [
-        json.loads(line)
-        for line in path.read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
 
 
 def test_engine_records_loop_transitions_without_changing_stream(tmp_path):

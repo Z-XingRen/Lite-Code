@@ -158,11 +158,17 @@ def _target(task_id: str, workspace: Path):
             if (workspace / "TODO.md").exists()
             else ""
         )
+        todo_lower = todo.lower()
+        mentions_conversion = "timeout_ms" in todo or (
+            "timeout" in todo_lower
+            and "millisecond" in todo_lower
+            and "second" in todo_lower
+        )
         return (
             m.request(type("C", (), {"get": lambda self, **kw: kw})(), 2500)["timeout"]
             == 2.5
-            and "timeout_ms" in todo
-            and "tests" in todo
+            and mentions_conversion
+            and "test" in todo_lower
         )
     if task_id == "R02_health_endpoint":
         m = _load(workspace, "src.app")

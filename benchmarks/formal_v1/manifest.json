@@ -328,7 +328,7 @@
     {
       "id": "R01_incident_fix",
       "category": "context-resume",
-      "prompt": "Read INCIDENT.md, PLAN.md, and the failing test before editing. Fix the timeout bug in src/service.py, add the required checkpoint note to TODO.md, run tests, and summarize changed files. Do not modify tests or the incident notes.",
+      "prompt": "Read INCIDENT.md, PLAN.md, and the failing test before editing. Fix the timeout bug in src/service.py, add a checkpoint note to TODO.md that explicitly mentions converting timeout_ms to seconds and running regression tests, run tests, and summarize changed files. Do not modify tests or the incident notes.",
       "follow_up_prompt": "",
       "fixture_repo": "benchmarks/formal_v1/fixtures/R01_incident_fix",
       "allowed_tools": [

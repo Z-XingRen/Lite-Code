@@ -1,6 +1,10 @@
 """Unit tests for verification signal extraction from tool traces."""
 
-from lite.core.verification import reduce_verification_signal, workspace_revision
+from lite.core.verification import (
+    classify_verification_command,
+    reduce_verification_signal,
+    workspace_revision,
+)
 
 
 def tool_event(command, status="ok"):
@@ -47,6 +51,11 @@ def test_verification_classifier_rejects_marker_only_shell_commands():
         "grep pytest README.md",
     ):
         assert reduce_verification_signal({}, tool_event(command), ["src/app.py"]) == {}
+
+
+def test_verification_classifier_rejects_chained_commands():
+    assert classify_verification_command("python -m pytest -q && echo bypass") == ""
+    assert classify_verification_command("python -c \"assert True\" > result.txt") == ""
 
 
 def test_verification_classifier_accepts_common_test_commands():

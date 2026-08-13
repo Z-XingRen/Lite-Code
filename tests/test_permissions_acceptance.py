@@ -1,6 +1,8 @@
 import json
+import sys
 
 from lite.testing import ScriptedModelClient
+from lite.testing import shell_join
 from lite import Lite, SessionStore, WorkspaceContext
 from lite.cli import handle_repl_command
 from lite.core.permissions import PermissionDecision
@@ -29,6 +31,184 @@ def read_session_events(agent):
         ).splitlines()
         if line.strip()
     ]
+
+
+def test_root_runtime_write_scope_blocks_paths_outside_allowlist(tmp_path):
+    agent = build_agent(
+        tmp_path,
+        [],
+        approval_policy="auto",
+        write_scope=["src/app.py"],
+    )
+
+    allowed = agent.run_tool(
+        "write_file", {"path": "src/app.py", "content": "VALUE = 1\n"}
+    )
+    blocked = agent.run_tool(
+        "write_file", {"path": "tests/test_app.py", "content": "bad\n"}
+    )
+
+    assert allowed.startswith("wrote src/app.py")
+    assert "write_scope does not allow" in blocked
+    assert not (tmp_path / "tests" / "test_app.py").exists()
+    assert "src/app.py" in agent.prefix
+    assert "including tests, as read-only" in agent.prefix
+
+
+def test_write_scope_blocks_unrestricted_shell_but_allows_verify(tmp_path):
+    allowed = tmp_path / "allowed.txt"
+    allowed.write_text("ok\n", encoding="utf-8")
+    agent = build_agent(
+        tmp_path,
+        [],
+        approval_policy="auto",
+        write_scope=["allowed.txt"],
+    )
+
+    blocked = agent.run_tool(
+        "run_shell",
+        {"command": shell_join([sys.executable, "-c", "print('blocked')"])},
+    )
+    verified = agent.run_tool(
+        "verify",
+        {
+            "command": shell_join(
+                [
+                    sys.executable,
+                    "-c",
+                    "from pathlib import Path; assert Path('allowed.txt').is_file()",
+                ]
+            ),
+            "covered_paths": ["allowed.txt"],
+        },
+    )
+
+    assert "write_scope does not allow unrestricted run_shell" in blocked
+    assert "exit_code: 0" in verified
+
+
+def test_write_scope_blocks_verify_sandbox_expansion(tmp_path):
+    (tmp_path / "allowed.txt").write_text("ok\n", encoding="utf-8")
+    agent = build_agent(
+        tmp_path,
+        [],
+        approval_policy="auto",
+        write_scope=["allowed.txt"],
+    )
+
+    result = agent.run_tool(
+        "verify",
+        {
+            "command": shell_join([sys.executable, "-c", "assert True"]),
+            "additional_writable_paths": [str(tmp_path)],
+        },
+    )
+
+    assert "write_scope does not allow verify sandbox expansion" in result
+
+
+def test_verify_command_cannot_chain_write_outside_write_scope(tmp_path):
+    (tmp_path / "allowed.txt").write_text("ok\n", encoding="utf-8")
+    agent = build_agent(
+        tmp_path,
+        [],
+        approval_policy="auto",
+        write_scope=["allowed.txt"],
+    )
+    command = shell_join(
+        [
+            sys.executable,
+            "-c",
+            "from pathlib import Path; assert Path('allowed.txt').is_file()",
+        ]
+    )
+    command += " && echo bypass > forbidden.txt"
+
+    result = agent.run_tool("verify", {"command": command, "timeout": 20})
+
+    assert "exit_code: 0" not in result
+    assert not (tmp_path / "forbidden.txt").exists()
+
+
+def test_verify_direct_write_is_isolated_and_fails_outside_write_scope(tmp_path):
+    (tmp_path / "allowed.txt").write_text("ok\n", encoding="utf-8")
+    agent = build_agent(
+        tmp_path,
+        [],
+        approval_policy="auto",
+        write_scope=["allowed.txt"],
+    )
+    command = shell_join(
+        [
+            sys.executable,
+            "-c",
+            (
+                "from pathlib import Path; "
+                "assert Path('allowed.txt').is_file(); "
+                "Path('forbidden.txt').write_text('bypass')"
+            ),
+        ]
+    )
+
+    result = agent.run_tool("verify", {"command": command, "timeout": 20})
+
+    assert "exit_code: 126" in result
+    assert "verify write_scope violation: forbidden.txt" in result
+    assert not (tmp_path / "forbidden.txt").exists()
+    assert agent._last_tool_result_metadata["security_event_type"] == "scope_violation"
+
+
+def test_verify_restores_absolute_workspace_writes_outside_scope(tmp_path):
+    (tmp_path / "allowed.txt").write_text("ok\n", encoding="utf-8")
+    forbidden = tmp_path / "forbidden.txt"
+    agent = build_agent(
+        tmp_path,
+        [],
+        approval_policy="auto",
+        write_scope=["allowed.txt"],
+    )
+    command = shell_join(
+        [
+            sys.executable,
+            "-c",
+            (
+                f"from pathlib import Path; assert True; "
+                f"Path({str(forbidden)!r}).write_text('bypass')"
+            ),
+        ]
+    )
+
+    result = agent.run_tool("verify", {"command": command, "timeout": 20})
+
+    assert "exit_code: 126" in result
+    assert "forbidden.txt" in result
+    assert not forbidden.exists()
+
+
+def test_verify_does_not_restore_absolute_workspace_writes_inside_scope(tmp_path):
+    allowed = tmp_path / "allowed.txt"
+    allowed.write_text("before\n", encoding="utf-8")
+    agent = build_agent(
+        tmp_path,
+        [],
+        approval_policy="auto",
+        write_scope=["allowed.txt"],
+    )
+    command = shell_join(
+        [
+            sys.executable,
+            "-c",
+            (
+                f"from pathlib import Path; assert True; "
+                f"Path({str(allowed)!r}).write_text('after')"
+            ),
+        ]
+    )
+
+    result = agent.run_tool("verify", {"command": command, "timeout": 20})
+
+    assert "exit_code: 0" in result
+    assert allowed.read_text(encoding="utf-8") == "after"
 
 
 def test_permission_checker_is_the_single_default_tool_gate(tmp_path):

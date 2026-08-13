@@ -4,7 +4,7 @@ import json
 import sys
 
 from lite import Lite, SessionStore, WorkspaceContext
-from lite.testing import ScriptedModelClient, shell_join
+from lite.testing import ScriptedModelClient, read_jsonl, shell_join
 
 
 def build_agent(tmp_path, outputs, **kwargs):
@@ -18,14 +18,6 @@ def build_agent(tmp_path, outputs, **kwargs):
         approval_policy="auto",
         **kwargs,
     )
-
-
-def read_jsonl(path):
-    return [
-        json.loads(line)
-        for line in path.read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
 
 
 def test_warn_final_readiness_allows_low_pressure_missing_provider_usage(tmp_path):

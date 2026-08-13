@@ -49,8 +49,17 @@ class PermissionChecker:
         if self.runtime.runtime_mode == "plan":
             return self._check_plan(tool, args)
 
-        if tool.name in {"write_file", "patch_file"} and getattr(self.runtime, "write_scope", ()):
-            return self._check_write_scope(tool, args)
+        if getattr(self.runtime, "write_scope", ()):
+            if tool.name in {"write_file", "patch_file"}:
+                return self._check_write_scope(tool, args)
+            if tool.name == "run_shell":
+                return PermissionDecision.deny(
+                    "write_scope_shell_blocked", "write_scope_guard"
+                )
+            if tool.name == "verify" and _requests_sandbox_expansion(args):
+                return PermissionDecision.deny(
+                    "write_scope_verify_expansion_blocked", "write_scope_guard"
+                )
         if tool.read_only:
             return PermissionDecision.allow("read_only")
         if self.runtime.read_only:

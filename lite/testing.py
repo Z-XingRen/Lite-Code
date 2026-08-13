@@ -1,5 +1,6 @@
 """Testing helpers for deterministic native-tool runtime checks."""
 
+import json
 import os
 import shlex
 import subprocess
@@ -7,6 +8,16 @@ from dataclasses import replace
 
 from .core import model_output as legacy_model_output
 from .providers.base import ModelConversation, ModelResult, ToolCall
+
+
+def read_jsonl(path):
+    """Read a UTF-8 JSONL artifact while ignoring blank lines."""
+
+    return [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
 
 
 class ScriptedModelClient:

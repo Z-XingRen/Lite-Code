@@ -137,10 +137,13 @@ class Lite(RuntimeSecretsMixin, RuntimeCheckpointsMixin):
         self.last_cancellation_acknowledged = True
         self.ask_user_callback = ask_user_callback
         self.sandbox_config = sandbox_config or SandboxConfig()
+        self.session_event_bus: SessionEventBus | None = None
         self.sandbox_runner = SandboxRunner(
             self.sandbox_config,
-            emit_event=lambda event, payload: self.session_event_bus.emit(
-                event, payload
+            emit_event=lambda event, payload: (
+                self.session_event_bus.emit(event, payload)
+                if self.session_event_bus is not None
+                else None
             ),
         )
         self.workspace = workspace
@@ -550,6 +553,13 @@ class Lite(RuntimeSecretsMixin, RuntimeCheckpointsMixin):
             else "/bin/sh"
         )
         platform_name = "Windows" if os.name == "nt" else os.name
+        write_scope_rule = ""
+        if self.write_scope:
+            writable_paths = ", ".join(self.write_scope)
+            write_scope_rule = (
+                "\n- Writes for this run are restricted to these workspace paths: "
+                f"{writable_paths}. Treat every other path, including tests, as read-only."
+            )
         text = textwrap.dedent(
             f"""\
             You are lite, a small local coding agent working inside a local repository.
@@ -570,7 +580,7 @@ class Lite(RuntimeSecretsMixin, RuntimeCheckpointsMixin):
             - Use verify for tests, lint, typecheck, or build verification. For Python, its default uses the current interpreter with python -m pytest.
             - Runtime platform: {platform_name}; run_shell uses {shell_name} in cwd {self.root}.
             - On Windows, do not use POSIX heredocs or commands such as `cd /d ... && pytest`; tools already run in the workspace root.
-            - Use agent for bounded subagents. Explore is read-only; worker writes must stay inside write_scope.
+            - Use agent for bounded subagents. Explore is read-only; worker writes must stay inside write_scope.{write_scope_rule}
             - Use send_message to continue an existing worker instead of spawning a fresh worker with missing context.
             - {skillslib.SKILL_FILE_CREATION_GUIDE}
 
@@ -801,7 +811,7 @@ class Lite(RuntimeSecretsMixin, RuntimeCheckpointsMixin):
 
     def remember_durable_note(self, text):
         path = memorylib.append_to_daily_log(self.memory_dir, text)
-        if path:
+        if path and self.session_event_bus is not None:
             self.session_event_bus.emit(
                 "memory_note_appended",
                 {
@@ -949,7 +959,7 @@ class Lite(RuntimeSecretsMixin, RuntimeCheckpointsMixin):
         token.cancel()
         acknowledged = token.wait_for_acknowledgements(timeout=5.0)
         self.last_cancellation_acknowledged = bool(acknowledged)
-        if not acknowledged and hasattr(self, "session_event_bus"):
+        if not acknowledged and self.session_event_bus is not None:
             self.session_event_bus.emit(
                 "cancellation_termination_timeout",
                 {"timeout_ms": 5000},

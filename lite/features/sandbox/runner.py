@@ -2,6 +2,7 @@
 
 import json
 import os
+import shlex
 import tempfile
 from dataclasses import replace
 from pathlib import Path
@@ -39,6 +40,7 @@ class SandboxRunner:
         network_access=None,
         additional_readonly_paths=(),
         additional_writable_paths=(),
+        shell=True,
     ):
         config = self._command_config(
             Path(cwd),
@@ -56,6 +58,7 @@ class SandboxRunner:
                 env=env,
                 timeout=timeout,
                 cancellation_token=cancellation_token,
+                shell=shell,
             )
 
         backend = SandboxChecker(self.which).resolve_backend(config.backend)
@@ -76,6 +79,7 @@ class SandboxRunner:
                 env=env,
                 timeout=timeout,
                 cancellation_token=cancellation_token,
+                shell=shell,
             )
 
         self.emit_event(
@@ -86,8 +90,15 @@ class SandboxRunner:
                 "workspace_write": config.workspace_write,
             },
         )
+        sandbox_command = (
+            str(command)
+            if shell
+            else shlex.join(str(item) for item in command)
+        )
         if backend.name == "bubblewrap":
-            argv = self._bubblewrap_argv(backend.path, command, Path(cwd), config)
+            argv = self._bubblewrap_argv(
+                backend.path, sandbox_command, Path(cwd), config
+            )
             return self._run_process(
                 argv,
                 cwd=cwd,
@@ -98,7 +109,7 @@ class SandboxRunner:
         if backend.name == "sandbox-exec":
             return self._run_sandbox_exec(
                 backend.path,
-                command,
+                sandbox_command,
                 Path(cwd),
                 config,
                 env=env,
@@ -107,7 +118,7 @@ class SandboxRunner:
             )
         if backend.name in {"docker", "podman"}:
             argv = self._container_argv(
-                backend.path, backend.name, command, Path(cwd), config
+                backend.path, backend.name, sandbox_command, Path(cwd), config
             )
             return self._run_process(
                 argv,
@@ -187,15 +198,17 @@ class SandboxRunner:
             resolved.append(str(path))
         return tuple(resolved)
 
-    def _plain(self, command, *, cwd, env, timeout, cancellation_token=None):
+    def _plain(
+        self, command, *, cwd, env, timeout, cancellation_token=None, shell=True
+    ):
         kwargs = {
             "cwd": cwd,
-            "shell": True,
+            "shell": shell,
             "timeout": timeout,
             "env": env,
             "cancellation_token": cancellation_token,
         }
-        if _DEFAULT_SHELL:
+        if _DEFAULT_SHELL and shell:
             # Python resolves ``shell=True`` through %ComSpec% on Windows.
             # Keep an absolute launcher even when the child environment is
             # deliberately reduced to a strict allowlist.

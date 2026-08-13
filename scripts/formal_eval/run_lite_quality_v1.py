@@ -116,6 +116,16 @@ def select_tasks(manifest, task_ids="", limit=0):
     return {**manifest, "tasks": tasks}
 
 
+def evaluation_allowed_tools(task):
+    """Expose verification without an unrestricted shell in fixed evaluations."""
+
+    tools = [str(name) for name in task.get("allowed_tools", [])]
+    if "run_shell" in tools:
+        tools = [name for name in tools if name != "run_shell"]
+        tools.append("verify")
+    return list(dict.fromkeys(tools))
+
+
 def make_client(config):
     temperature = configured_temperature(config)
     return model_client_from_config(
@@ -140,19 +150,39 @@ def fresh_workspace(task, out_dir: Path):
 
 
 def grade_task(task_id, workspace):
-    result = subprocess.run(
-        [sys.executable, str(GRADER), "--task", task_id, "--workspace", str(workspace)],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=90,
-    )
+    try:
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(GRADER),
+                "--task",
+                task_id,
+                "--workspace",
+                str(workspace),
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=90,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {
+            "target_pass": False,
+            "regression_pass": False,
+            "grader_returncode": None,
+            "grader_stdout_tail": "",
+            "grader_stderr_tail": "",
+            "grader_infrastructure_error": True,
+            "grader_error": f"{type(exc).__name__}: {exc}",
+        }
     payload = {}
+    parsed_payload = False
     for line in reversed(result.stdout.splitlines()):
         try:
             payload = json.loads(line)
+            parsed_payload = True
             break
         except json.JSONDecodeError:
             continue
@@ -161,6 +191,9 @@ def grade_task(task_id, workspace):
     payload["grader_returncode"] = result.returncode
     payload["grader_stdout_tail"] = result.stdout[-1000:]
     payload["grader_stderr_tail"] = result.stderr[-1000:]
+    payload["grader_infrastructure_error"] = bool(
+        not parsed_payload or result.returncode not in {0, 1}
+    )
     return payload
 
 
@@ -224,7 +257,10 @@ def classify_trial_failure(row):
         return "timeout"
     if row.get("stop_reason") == "model_error":
         return "provider_error"
-    if int((row.get("grader", {}) or {}).get("grader_returncode", 0) or 0) != 0:
+    grader = row.get("grader", {}) or {}
+    if grader.get("grader_infrastructure_error") or (
+        grader.get("grader_returncode") not in {None, 0, 1}
+    ):
         return "grader_infrastructure_error"
     if errors:
         return "runtime_error"
@@ -259,7 +295,8 @@ def run_trial(task, repeat, out_root, config, *, feature_flags=None):
         approval_policy="auto",
         max_steps=int(task["step_budget"]),
         max_new_tokens=default_max_tokens_for_provider(config.name),
-        allowed_tools=task["allowed_tools"],
+        allowed_tools=evaluation_allowed_tools(task),
+        write_scope=task["expected_changed_paths"],
         feature_flags=feature_flags or {"context_reduction": True},
     )
     errors = []

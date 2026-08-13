@@ -318,6 +318,10 @@ def permission_error(agent, tool, decision):
         )
     if decision.reason == "write_scope_mismatch":
         return f"error: worker write_scope does not allow {tool.name} on this path"
+    if decision.reason == "write_scope_shell_blocked":
+        return "error: write_scope does not allow unrestricted run_shell"
+    if decision.reason == "write_scope_verify_expansion_blocked":
+        return "error: write_scope does not allow verify sandbox expansion"
     if decision.reason in {"approval_denied", "tool_not_allowed"}:
         return f"error: approval denied for {tool.name}"
     return f"error: permission denied for {tool.name}: {decision.reason}"

@@ -1,6 +1,6 @@
 import json
 
-from lite.testing import ScriptedModelClient
+from lite.testing import ScriptedModelClient, read_jsonl
 from lite import Lite, SessionStore, WorkspaceContext
 from lite.core.context_manager import ContextManager
 
@@ -16,10 +16,6 @@ def build_agent(tmp_path, outputs=None, **kwargs):
         approval_policy="auto",
         **kwargs,
     )
-
-
-def read_jsonl(path):
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
 def test_context_usage_is_recorded_for_real_turn_report_and_session_events(tmp_path):

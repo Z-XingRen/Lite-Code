@@ -279,6 +279,7 @@ def _row(
     attempts=1,
     cost_usd=None,
     usage_source="actual",
+    compact_net_benefit_tokens=None,
 ):
     return ExperimentRow(
         task_id=task_id,
@@ -302,6 +303,7 @@ def _row(
         replacement_cache_hits=0,
         summary_called=False,
         summary_delta_event_count=0,
+        compact_net_benefit_tokens=compact_net_benefit_tokens,
         report_path="report.json",
         trace_path="trace.jsonl",
     )
@@ -314,6 +316,18 @@ def test_summarize_paired_rows_splits_actual_proxy_and_reports_quality_regressio
             _row("a", "no_context_reduction", 1000, cost_usd=1.0),
             _row("b", "full_orchestrator", 900, tool_steps=4, cost_usd=0.9),
             _row("b", "no_context_reduction", 1000, tool_steps=1, cost_usd=1.0),
+            _row(
+                "proxy",
+                "full_orchestrator",
+                800,
+                usage_source="estimated_proxy",
+            ),
+            _row(
+                "proxy",
+                "no_context_reduction",
+                1000,
+                usage_source="estimated_proxy",
+            ),
         ],
         treatment="full_orchestrator",
         control="no_context_reduction",
@@ -332,7 +346,8 @@ def test_summarize_paired_rows_splits_actual_proxy_and_reports_quality_regressio
     assert actual["output_tokens_per_task_treatment"] == 10
     assert actual["claimable_cost_win"] is False
     assert summary["real_usage_row_count"] == 4
-    assert summary["estimated_proxy_only"]["paired_task_count"] == 0
+    assert summary["estimated_proxy_row_count"] == 2
+    assert summary["estimated_proxy_only"]["paired_task_count"] == 1
     assert summary["mixed_or_invalid"]["paired_task_count"] == 0
 
 
@@ -353,6 +368,44 @@ def test_lower_cost_with_unknown_or_failed_verification_is_not_claimable():
         treatment="full_orchestrator",
         control="no_context_reduction",
     )
+    negative_net_summary = summarize_paired_rows(
+        [
+            _row(
+                "a",
+                "full_orchestrator",
+                500,
+                usage_source="estimated_proxy",
+                compact_net_benefit_tokens=-1,
+            ),
+            _row(
+                "a",
+                "no_context_reduction",
+                1000,
+                usage_source="estimated_proxy",
+            ),
+        ],
+        treatment="full_orchestrator",
+        control="no_context_reduction",
+    )
+    clean_summary = summarize_paired_rows(
+        [
+            _row(
+                "a",
+                "full_orchestrator",
+                500,
+                usage_source="estimated_proxy",
+                compact_net_benefit_tokens=10,
+            ),
+            _row(
+                "a",
+                "no_context_reduction",
+                1000,
+                usage_source="estimated_proxy",
+            ),
+        ],
+        treatment="full_orchestrator",
+        control="no_context_reduction",
+    )
 
     assert unknown_summary["actual_only"]["median_cost_delta_pct"] < 0
     assert unknown_summary["actual_only"]["quality_regression_count"] == 1
@@ -360,6 +413,11 @@ def test_lower_cost_with_unknown_or_failed_verification_is_not_claimable():
     assert unknown_summary["actual_only"]["claimable_cost_win"] is False
     assert failed_summary["actual_only"]["quality_regression_count"] == 1
     assert failed_summary["actual_only"]["claimable_cost_win"] is False
+    assert (
+        negative_net_summary["estimated_proxy_only"]["claimable_cost_win"]
+        is False
+    )
+    assert clean_summary["estimated_proxy_only"]["claimable_cost_win"] is True
 
 
 def test_deterministic_prompt_experiment_pairs_full_and_no_reduction(tmp_path):
@@ -375,6 +433,11 @@ def test_deterministic_prompt_experiment_pairs_full_and_no_reduction(tmp_path):
         "full_orchestrator",
         "no_context_reduction",
     }
+    by_variant = {row["variant"]: row for row in payload["rows"]}
+    assert (
+        by_variant["full_orchestrator"]["usage"]["input_tokens"]
+        < by_variant["no_context_reduction"]["usage"]["input_tokens"]
+    )
 
 
 def test_scripted_e2e_experiment_records_quality_and_report_paths(tmp_path):
@@ -388,6 +451,8 @@ def test_scripted_e2e_experiment_records_quality_and_report_paths(tmp_path):
     assert payload["summary"]["estimated_proxy_only"]["quality_regression_count"] == 0
     assert all(row["status"] == "completed" for row in payload["rows"])
     assert all(row["report_path"] for row in payload["rows"])
+    assert all(row["tool_steps"] > 0 for row in payload["rows"])
+    assert all(row["verification_status"] == "passed" for row in payload["rows"])
 
 
 def test_collect_rows_from_run_manifest_reads_existing_reports(tmp_path):
@@ -510,6 +575,12 @@ def test_render_markdown_report_separates_actual_and_proxy_usage():
     assert "Estimated-proxy billable input tokens/task: 700.0 vs 1000.0" in report
     assert "Pricing basis: configured, not provider-authenticated" in report
     assert "Input $/1M: 2.0" in report
+    assert "## Net Benefit" in report
+    assert (
+        "net_saved = baseline_input_tokens - optimized_input_tokens - "
+        "compact_call_tokens"
+    ) in report
+    assert "compact_call_tokens: 0" in report
 
 
 def test_write_experiment_artifacts_writes_json_csv_and_markdown(tmp_path):
@@ -525,6 +596,13 @@ def test_write_experiment_artifacts_writes_json_csv_and_markdown(tmp_path):
     assert (output_dir / "results.json").is_file()
     assert (output_dir / "paired_rows.csv").is_file()
     assert (output_dir / "report.md").is_file()
+    combined = "\n".join(
+        (output_dir / name).read_text(encoding="utf-8")
+        for name in ("results.json", "paired_rows.csv", "report.md")
+    )
+    assert "sk-" not in combined
+    assert "api_key" not in combined
+    assert "api-key" not in combined
 
 
 def test_context_cost_cli_deterministic_smoke(tmp_path):

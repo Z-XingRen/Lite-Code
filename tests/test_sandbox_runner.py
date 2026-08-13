@@ -58,6 +58,21 @@ def test_off_sandbox_keeps_plain_subprocess_behavior(tmp_path):
     assert result.stdout.strip() == "lite"
 
 
+def test_off_sandbox_can_run_argv_without_shell_interpretation(tmp_path):
+    runner = SandboxRunner(SandboxConfig(mode="off"), run=subprocess.run)
+
+    result = runner.run(
+        [sys.executable, "-c", "print('verified')", "&&", "echo", "bypass"],
+        cwd=tmp_path,
+        env=os.environ.copy(),
+        timeout=5,
+        shell=False,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout.strip() == "verified"
+
+
 def test_auto_backend_is_platform_aware():
     available = {
         "bwrap": "/bin/bwrap",

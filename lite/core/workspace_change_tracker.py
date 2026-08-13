@@ -18,7 +18,7 @@ from .workspace import IGNORED_PATH_NAMES
 TRANSPARENT_TOOL_NAMES = frozenset(
     {"write_file", "patch_file", "delete_file", "rename", "rename_file"}
 )
-OPAQUE_TOOL_NAMES = frozenset({"run_shell"})
+OPAQUE_TOOL_NAMES = frozenset({"run_shell", "verify"})
 _PATH_ARGUMENT_KEYS = (
     "path",
     "paths",

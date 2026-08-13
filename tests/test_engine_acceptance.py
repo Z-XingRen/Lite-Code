@@ -3,7 +3,7 @@
 import json
 import sys
 
-from lite.testing import ScriptedModelClient, shell_join
+from lite.testing import ScriptedModelClient, read_jsonl, shell_join
 from lite import Lite, SessionStore, WorkspaceContext
 from lite.providers import ProviderError
 
@@ -20,14 +20,6 @@ def build_agent(tmp_path, outputs, **kwargs):
         approval_policy="auto",
         **kwargs,
     )
-
-
-def read_jsonl(path):
-    return [
-        json.loads(line)
-        for line in path.read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
 
 
 def test_engine_streams_a_real_session_with_tool_artifacts(tmp_path):
@@ -59,7 +51,14 @@ def test_engine_streams_a_real_session_with_tool_artifacts(tmp_path):
     event_names = [event["event"] for event in persisted_events]
     assert event_names.count("context_orchestrator_decision") == 1
     assert event_names.count("context_usage_recorded") == 1
+    assert "tool_started" in event_names
     assert "tool_finished" in event_names
+    tool_finished = next(
+        event for event in persisted_events if event["event"] == "tool_finished"
+    )
+    assert tool_finished["tool_name"] == "write_file"
+    assert tool_finished["status"] == "ok"
+    assert tool_finished["workspace_changed"] is True
     assert event_names[-4:] == [
         "model_requested",
         "model_parsed",

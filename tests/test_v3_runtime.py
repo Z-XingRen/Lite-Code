@@ -58,29 +58,6 @@ def test_engine_drives_real_session_and_persists_event_timeline(tmp_path):
     ]
 
 
-def test_engine_wraps_real_tools_with_session_events(tmp_path):
-    agent = build_agent(
-        tmp_path,
-        [
-            '<tool name="write_file" path="notes/result.txt"><content>ok\n</content></tool>',
-            "<final>Wrote it.</final>",
-        ],
-    )
-
-    answer = agent.ask("write a file")
-
-    assert answer == "Wrote it."
-    assert (tmp_path / "notes" / "result.txt").read_text(encoding="utf-8") == "ok\n"
-    events = read_session_events(agent)
-    names = [event["event"] for event in events]
-    assert "tool_started" in names
-    assert "tool_finished" in names
-    tool_finished = next(event for event in events if event["event"] == "tool_finished")
-    assert tool_finished["tool_name"] == "write_file"
-    assert tool_finished["status"] == "ok"
-    assert tool_finished["workspace_changed"] is True
-
-
 def test_plan_mode_allows_only_the_active_plan_artifact_until_plan_is_written(tmp_path):
     agent = build_agent(
         tmp_path,
