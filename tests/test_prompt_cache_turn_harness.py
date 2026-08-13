@@ -7,6 +7,7 @@ from lite.evaluation.prompt_cache_turn_harness import (
     RESULT_FIELDS,
     VARIANTS,
     load_manifest,
+    paired_metrics,
     result_matrix_keys,
     row_from_turns,
     summarize_results,
@@ -124,8 +125,10 @@ def test_prompt_cache_result_matrix_and_summary_are_completeness_bound(tmp_path)
     assert complete_summary["matrix"]["complete"] is True
     assert complete_summary["overall"]["row_count"] == 2
     assert "append_projection" in complete_summary["by_variant"]
+    assert complete_summary["paired"]["pair_count"] == 1
     markdown = paths["markdown"].read_text(encoding="utf-8")
     assert all(field in markdown for field in RESULT_FIELDS)
+    assert "## Paired comparison" in markdown
 
 
 def test_prompt_cache_summary_aggregates_rates_and_token_means():
@@ -167,6 +170,79 @@ def test_prompt_cache_summary_aggregates_rates_and_token_means():
         "mean_second_turn_cached_tokens": 40.0,
     }
     assert summary["by_scenario"]["append"]["behavior_pass_rate"] == 1.0
+
+
+def test_prompt_cache_paired_metrics_compare_matched_rows_only():
+    rows = [
+        {
+            "scenario": "append",
+            "repeat": 0,
+            "variant": "full_prompt",
+            "behavior_pass": True,
+            "usage_complete": True,
+            "billable_input_tokens": 7625,
+            "second_turn_cached_tokens": 0,
+        },
+        {
+            "scenario": "append",
+            "repeat": 0,
+            "variant": "append_projection",
+            "behavior_pass": True,
+            "usage_complete": True,
+            "billable_input_tokens": 1001,
+            "second_turn_cached_tokens": 6656,
+        },
+        {
+            "scenario": "session_resume",
+            "repeat": 0,
+            "variant": "full_prompt",
+            "behavior_pass": True,
+            "usage_complete": True,
+            "billable_input_tokens": 7000,
+            "second_turn_cached_tokens": 0,
+        },
+    ]
+
+    paired = paired_metrics(rows)
+
+    assert paired["pair_count"] == 1
+    assert paired["usage_complete_pair_count"] == 1
+    assert paired["behavior_regression_count"] == 0
+    assert paired["break_even_pair_count"] == 1
+    assert paired["break_even_pair_rate"] == 1.0
+    assert paired["mean_billable_input_delta_tokens"] == -6624.0
+    assert paired["mean_billable_input_delta_pct"] == -0.868721
+    assert paired["mean_second_turn_cached_tokens_delta"] == 6656.0
+    assert paired["pairs"][0]["break_even"] is True
+
+
+def test_prompt_cache_paired_metrics_exclude_incomplete_usage_from_token_means():
+    paired = paired_metrics(
+        [
+            {
+                "scenario": "append",
+                "repeat": 0,
+                "variant": "full_prompt",
+                "behavior_pass": True,
+                "usage_complete": True,
+                "billable_input_tokens": 100,
+            },
+            {
+                "scenario": "append",
+                "repeat": 0,
+                "variant": "append_projection",
+                "behavior_pass": False,
+                "usage_complete": False,
+                "billable_input_tokens": 20,
+            },
+        ]
+    )
+
+    assert paired["pair_count"] == 1
+    assert paired["usage_complete_pair_count"] == 0
+    assert paired["behavior_regression_count"] == 1
+    assert paired["mean_billable_input_delta_tokens"] is None
+    assert paired["mean_billable_input_delta_pct"] is None
 
 
 @pytest.mark.parametrize(

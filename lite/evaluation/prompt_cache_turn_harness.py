@@ -366,6 +366,29 @@ def write_results(rows, output_dir, *, expected_keys=None, require_complete=Fals
                 "",
             ]
         )
+    paired = summary["paired"]
+    lines.extend(
+        [
+            "## Paired comparison",
+            "",
+            f"- Complete pairs: {paired['pair_count']}",
+            f"- Usage-complete pairs: {paired['usage_complete_pair_count']}",
+            f"- Behavior regressions: {paired['behavior_regression_count']}",
+            f"- Break-even pairs: {paired['break_even_pair_count']}",
+            (
+                "- Mean billable input delta: "
+                f"{paired['mean_billable_input_delta_tokens']} tokens "
+                f"({paired['mean_billable_input_delta_pct']})"
+            ),
+            (
+                "- Mean second-turn cached-token delta: "
+                f"{paired['mean_second_turn_cached_tokens_delta']}"
+            ),
+            "",
+            "## Rows",
+            "",
+        ]
+    )
     lines.extend(
         [
             "| " + " | ".join(columns) + " |",
@@ -392,13 +415,103 @@ def summarize_results(rows, *, matrix=None, results_digest=""):
 
     ordered = [dict(row) for row in rows]
     return {
-        "schema_version": "lite.prompt_cache_turn_summary.v1",
+        "schema_version": "lite.prompt_cache_turn_summary.v2",
         "results_sha256": str(results_digest),
         "matrix": dict(matrix or {}),
         "row_count": len(ordered),
         "overall": _aggregate_rows(ordered),
         "by_variant": _aggregate_groups(ordered, "variant"),
         "by_scenario": _aggregate_groups(ordered, "scenario"),
+        "paired": paired_metrics(ordered),
+    }
+
+
+def paired_metrics(rows):
+    """Compare append projection with its matched full-prompt control."""
+
+    index = {
+        (
+            str(row.get("scenario", "")),
+            int(row.get("repeat", 0)),
+            str(row.get("variant", "")),
+        ): row
+        for row in rows
+    }
+    pair_keys = sorted(
+        {
+            (scenario, repeat)
+            for scenario, repeat, _variant in index
+        }
+    )
+    pairs = []
+    for scenario, repeat in pair_keys:
+        control = index.get((scenario, repeat, "full_prompt"))
+        treatment = index.get((scenario, repeat, "append_projection"))
+        if not control or not treatment:
+            continue
+        usage_complete = bool(
+            control.get("usage_complete") and treatment.get("usage_complete")
+        )
+        control_billable = int(control.get("billable_input_tokens", 0) or 0)
+        treatment_billable = int(treatment.get("billable_input_tokens", 0) or 0)
+        delta_tokens = treatment_billable - control_billable
+        delta_pct = (
+            round(delta_tokens / control_billable, 6)
+            if usage_complete and control_billable
+            else None
+        )
+        behavior_regression = bool(
+            control.get("behavior_pass") and not treatment.get("behavior_pass")
+        )
+        break_even = bool(
+            usage_complete
+            and treatment_billable < control_billable
+            and treatment.get("behavior_pass")
+            and not behavior_regression
+        )
+        pairs.append(
+            {
+                "scenario": scenario,
+                "repeat": repeat,
+                "usage_complete": usage_complete,
+                "control_behavior_pass": bool(control.get("behavior_pass")),
+                "treatment_behavior_pass": bool(treatment.get("behavior_pass")),
+                "behavior_regression": behavior_regression,
+                "control_billable_input_tokens": control_billable,
+                "treatment_billable_input_tokens": treatment_billable,
+                "billable_input_delta_tokens": delta_tokens,
+                "billable_input_delta_pct": delta_pct,
+                "second_turn_cached_tokens_delta": int(
+                    treatment.get("second_turn_cached_tokens", 0) or 0
+                )
+                - int(control.get("second_turn_cached_tokens", 0) or 0),
+                "break_even": break_even,
+            }
+        )
+    complete_usage = [pair for pair in pairs if pair["usage_complete"]]
+    pct_pairs = [
+        pair
+        for pair in complete_usage
+        if pair["billable_input_delta_pct"] is not None
+    ]
+    return {
+        "pair_count": len(pairs),
+        "usage_complete_pair_count": len(complete_usage),
+        "behavior_regression_count": sum(
+            pair["behavior_regression"] for pair in pairs
+        ),
+        "break_even_pair_count": sum(pair["break_even"] for pair in pairs),
+        "break_even_pair_rate": _pair_rate(pairs, "break_even"),
+        "mean_billable_input_delta_tokens": _pair_mean(
+            complete_usage, "billable_input_delta_tokens"
+        ),
+        "mean_billable_input_delta_pct": _pair_mean(
+            pct_pairs, "billable_input_delta_pct"
+        ),
+        "mean_second_turn_cached_tokens_delta": _pair_mean(
+            complete_usage, "second_turn_cached_tokens_delta"
+        ),
+        "pairs": pairs,
     }
 
 
@@ -450,6 +563,18 @@ def _mean(rows, field):
         sum(float(row.get(field, 0) or 0) for row in rows) / len(rows),
         6,
     )
+
+
+def _pair_rate(pairs, field):
+    if not pairs:
+        return 0.0
+    return round(sum(bool(pair[field]) for pair in pairs) / len(pairs), 6)
+
+
+def _pair_mean(pairs, field):
+    if not pairs:
+        return None
+    return round(sum(float(pair[field]) for pair in pairs) / len(pairs), 6)
 
 
 def _atomic_write_text(path, content):
