@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from lite.evaluation.run_evidence import RunEvidence
 
 
@@ -57,3 +59,22 @@ def test_run_evidence_reads_trace_report_and_session_artifacts(tmp_path):
         ".lite/runs/run_1/artifacts/fallback.txt",
     ]
     assert evidence.has_session_event("permission_decision", reason="allow")
+
+
+def test_run_evidence_loads_an_exact_run(tmp_path):
+    runs = tmp_path / ".lite" / "runs"
+    for run_id in ("run_1", "run_2"):
+        run_dir = runs / run_id
+        run_dir.mkdir(parents=True)
+        (run_dir / "report.json").write_text(
+            json.dumps({"run_id": run_id, "status": "completed"}),
+            encoding="utf-8",
+        )
+
+    evidence = RunEvidence.for_run(tmp_path, "run_1")
+
+    assert evidence.run_dir.name == "run_1"
+    assert evidence.report["run_id"] == "run_1"
+
+    with pytest.raises(FileNotFoundError, match="run evidence not found"):
+        RunEvidence.for_run(tmp_path, "missing")

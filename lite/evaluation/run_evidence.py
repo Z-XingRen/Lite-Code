@@ -29,6 +29,20 @@ class RunEvidence:
     def latest(cls, workspace: Path) -> "RunEvidence":
         workspace = Path(workspace).resolve()
         run_dir = _latest_dir(workspace / ".lite" / "runs")
+        return cls._load(workspace, run_dir)
+
+    @classmethod
+    def for_run(cls, workspace: Path, run_id: str) -> "RunEvidence":
+        """Load one exact run without relying on filesystem recency."""
+
+        workspace = Path(workspace).resolve()
+        run_dir = workspace / ".lite" / "runs" / str(run_id)
+        if not run_dir.is_dir():
+            raise FileNotFoundError(f"run evidence not found: {run_id}")
+        return cls._load(workspace, run_dir)
+
+    @classmethod
+    def _load(cls, workspace: Path, run_dir: Path | None) -> "RunEvidence":
         report_path = _existing(run_dir / "report.json") if run_dir else None
         trace_path = _existing(run_dir / "trace.jsonl") if run_dir else None
         task_state_path = _existing(run_dir / "task_state.json") if run_dir else None

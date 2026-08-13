@@ -1,0 +1,52 @@
+{
+  "schema_version": "lite.prompt_cache_turns.v1",
+  "benchmark_id": "lite-prompt-cache-turns-v1",
+  "repetitions": 3,
+  "scenarios": [
+    {
+      "id": "append",
+      "between_turns": "none",
+      "expected_projection_reason": "append",
+      "turns": [
+        {
+          "prompt": "Do not call tools. Reply with exactly CACHE_APPEND_ONE.",
+          "expected_answer": "CACHE_APPEND_ONE"
+        },
+        {
+          "prompt": "Do not call tools. Reply with exactly CACHE_APPEND_TWO.",
+          "expected_answer": "CACHE_APPEND_TWO"
+        }
+      ]
+    },
+    {
+      "id": "workspace_refresh",
+      "between_turns": "workspace_refresh",
+      "expected_projection_reason": "context_refresh",
+      "turns": [
+        {
+          "prompt": "Do not call tools. Reply with exactly CACHE_REFRESH_ONE.",
+          "expected_answer": "CACHE_REFRESH_ONE"
+        },
+        {
+          "prompt": "Do not call tools. Reply with exactly CACHE_REFRESH_TWO.",
+          "expected_answer": "CACHE_REFRESH_TWO"
+        }
+      ]
+    },
+    {
+      "id": "session_resume",
+      "between_turns": "session_resume",
+      "expected_projection_reason": "append",
+      "turns": [
+        {
+          "prompt": "Do not call tools. Reply with exactly CACHE_RESUME_ONE.",
+          "expected_answer": "CACHE_RESUME_ONE"
+        },
+        {
+          "prompt": "Do not call tools. Reply with exactly CACHE_RESUME_TWO.",
+          "expected_answer": "CACHE_RESUME_TWO"
+        }
+      ]
+    }
+  ]
+}

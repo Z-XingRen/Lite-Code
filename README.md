@@ -272,6 +272,17 @@ LITE_LIVE_SMOKE=1 python -m pytest tests/test_release_smoke.py -q
 
 真实 provider 测试需要可用的 API key 和 endpoint；普通单元测试不应依赖网络。
 
+验证跨用户 turn 的 append-only prompt cache projection：
+
+~~~bash
+python scripts/run_prompt_cache_turn_harness.py --output-dir artifacts/prompt-cache-turns-v1
+~~~
+
+该命令固定运行普通追加、workspace refresh 和 session resume 三种双 turn
+场景，并以 full-prompt control 对照 append projection。结果同时记录运行时
+projection 决策、provider 实际 cached tokens、billable input tokens 和逐 turn
+run evidence；不完整矩阵或运行时/config identity 变化会被拒绝。
+
 采集 Workspace Change Tracker 与 Journal Effect 恢复证据：
 
 ~~~bash
