@@ -240,6 +240,12 @@ def test_prompt_cache_complete_formal_matrix_is_claimable(tmp_path):
             "workspace_refresh",
         ],
         "scenario_coverage_satisfied": True,
+        "scenario_order_balance": {
+            "append": True,
+            "session_resume": True,
+            "workspace_refresh": True,
+        },
+        "scenario_order_balance_satisfied": True,
         "scenario_pair_counts": {
             "append": 3,
             "session_resume": 3,
@@ -305,6 +311,51 @@ def test_prompt_cache_formal_claim_requires_both_variants_to_pass(tmp_path):
     assert claimability["behavior_valid_pair_count"] == 8
     assert claimability["behavior_completeness"] == 0.888889
     assert "behavior_validation_failed" in claimability["claimability_reasons"]
+
+
+def test_prompt_cache_formal_claim_requires_order_balance_per_scenario(tmp_path):
+    scenarios = ("append", "workspace_refresh", "session_resume")
+    rows = _claim_rows(scenarios=scenarios, repetitions=3)
+    for row in rows:
+        if row["scenario"] == "append":
+            row["pair_execution_order"] = (
+                "full_prompt_then_append_projection"
+            )
+            row["execution_position"] = (
+                0 if row["variant"] == "full_prompt" else 1
+            )
+        elif row["scenario"] == "workspace_refresh":
+            row["pair_execution_order"] = (
+                "append_projection_then_full_prompt"
+            )
+            row["execution_position"] = (
+                0 if row["variant"] == "append_projection" else 1
+            )
+    expected = result_matrix_keys(
+        [{"id": scenario} for scenario in scenarios], VARIANTS, 3
+    )
+
+    paths = write_results(
+        rows,
+        tmp_path,
+        expected_keys=expected,
+        require_complete=True,
+        evaluation_identity={
+            "mode": "formal",
+            "execution_order_policy": "counterbalanced_v1",
+        },
+    )
+
+    summary = json.loads(paths["summary"].read_text(encoding="utf-8"))
+    claimability = summary["claimability"]
+    assert claimability["claimable"] is False
+    assert claimability["order_balance_satisfied"] is True
+    assert claimability["scenario_order_balance_satisfied"] is False
+    assert claimability["scenario_order_balance"]["append"] is False
+    assert (
+        "scenario_execution_order_balance_required"
+        in claimability["claimability_reasons"]
+    )
 
 
 def test_prompt_cache_paired_metrics_compare_matched_rows_only():
@@ -407,10 +458,14 @@ def test_prompt_cache_paired_metrics_stratify_execution_order():
             "behavior_valid_pair_count": 1,
             "break_even_pair_count": 1,
             "break_even_pair_rate": 1.0,
+            "control_first_pair_count": 1,
+            "inconsistent_order_pair_count": 0,
             "mean_billable_input_delta_pct": -0.6,
             "mean_billable_input_delta_tokens": -60.0,
             "mean_second_turn_cached_tokens_delta": 0.0,
+            "order_balance_satisfied": False,
             "pair_count": 1,
+            "projection_first_pair_count": 0,
             "usage_complete_pair_count": 1,
         },
         "projection_first": {
@@ -418,10 +473,14 @@ def test_prompt_cache_paired_metrics_stratify_execution_order():
             "behavior_valid_pair_count": 1,
             "break_even_pair_count": 1,
             "break_even_pair_rate": 1.0,
+            "control_first_pair_count": 0,
+            "inconsistent_order_pair_count": 0,
             "mean_billable_input_delta_pct": -0.833333,
             "mean_billable_input_delta_tokens": -100.0,
             "mean_second_turn_cached_tokens_delta": 0.0,
+            "order_balance_satisfied": False,
             "pair_count": 1,
+            "projection_first_pair_count": 1,
             "usage_complete_pair_count": 1,
         },
     }
@@ -457,10 +516,14 @@ def test_prompt_cache_paired_metrics_stratify_scenarios():
             "behavior_valid_pair_count": 2,
             "break_even_pair_count": 2,
             "break_even_pair_rate": 1.0,
+            "control_first_pair_count": 1,
+            "inconsistent_order_pair_count": 0,
             "mean_billable_input_delta_pct": -0.6,
             "mean_billable_input_delta_tokens": -60.0,
             "mean_second_turn_cached_tokens_delta": 0.0,
+            "order_balance_satisfied": True,
             "pair_count": 2,
+            "projection_first_pair_count": 1,
             "usage_complete_pair_count": 2,
         },
         "workspace_refresh": {
@@ -468,10 +531,14 @@ def test_prompt_cache_paired_metrics_stratify_scenarios():
             "behavior_valid_pair_count": 2,
             "break_even_pair_count": 2,
             "break_even_pair_rate": 1.0,
+            "control_first_pair_count": 1,
+            "inconsistent_order_pair_count": 0,
             "mean_billable_input_delta_pct": -0.25,
             "mean_billable_input_delta_tokens": -40.0,
             "mean_second_turn_cached_tokens_delta": 0.0,
+            "order_balance_satisfied": True,
             "pair_count": 2,
+            "projection_first_pair_count": 1,
             "usage_complete_pair_count": 2,
         },
     }

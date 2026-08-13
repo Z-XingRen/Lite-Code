@@ -384,6 +384,10 @@ def write_results(
             f"{claimability['order_balance_satisfied']}"
         ),
         (
+            "- Per-scenario order balance satisfied: "
+            f"{claimability['scenario_order_balance_satisfied']}"
+        ),
+        (
             "- Behavior regressions: "
             f"{claimability['behavior_regression_count']}"
         ),
@@ -545,7 +549,7 @@ def summarize_results(
     ordered = [dict(row) for row in rows]
     paired = paired_metrics(ordered)
     return {
-        "schema_version": "lite.prompt_cache_turn_summary.v7",
+        "schema_version": "lite.prompt_cache_turn_summary.v8",
         "results_sha256": str(results_digest),
         "matrix": dict(matrix or {}),
         "row_count": len(ordered),
@@ -601,6 +605,19 @@ def claimability_metrics(*, matrix, paired, evaluation_identity=None):
     scenario_coverage_satisfied = bool(
         not missing_required_scenarios and not underrepresented_scenarios
     )
+    scenario_order_balance = {
+        scenario: bool(
+            metrics.get("order_balance_satisfied", False)
+        )
+        for scenario, metrics in sorted(scenario_metrics.items())
+    }
+    scenario_order_balance_satisfied = bool(
+        scenario_coverage_satisfied
+        and all(
+            scenario_order_balance.get(scenario, False)
+            for scenario in REQUIRED_CLAIMABLE_SCENARIOS
+        )
+    )
     matrix_data = dict(matrix or {})
     matrix_complete = bool(matrix_data.get("complete", False))
     expected_count = int(matrix_data.get("expected_count", 0) or 0)
@@ -648,6 +665,8 @@ def claimability_metrics(*, matrix, paired, evaluation_identity=None):
         reasons.append("inconsistent_execution_order")
     if not order_balance_satisfied:
         reasons.append("execution_order_balance_required")
+    if not scenario_order_balance_satisfied:
+        reasons.append("scenario_execution_order_balance_required")
 
     return {
         "claimable": not reasons,
@@ -662,6 +681,8 @@ def claimability_metrics(*, matrix, paired, evaluation_identity=None):
         "missing_required_scenarios": missing_required_scenarios,
         "underrepresented_scenarios": underrepresented_scenarios,
         "scenario_coverage_satisfied": scenario_coverage_satisfied,
+        "scenario_order_balance": scenario_order_balance,
+        "scenario_order_balance_satisfied": scenario_order_balance_satisfied,
         "matrix_complete": matrix_complete,
         "paired_matrix_complete": paired_matrix_complete,
         "usage_completeness": usage_completeness,
@@ -832,9 +853,31 @@ def _summarize_pairs(pairs):
         for pair in complete_usage
         if pair["billable_input_delta_pct"] is not None
     ]
+    control_first_pair_count = sum(
+        pair["pair_execution_order"]
+        == "full_prompt_then_append_projection"
+        for pair in pairs
+    )
+    projection_first_pair_count = sum(
+        pair["pair_execution_order"]
+        == "append_projection_then_full_prompt"
+        for pair in pairs
+    )
+    inconsistent_order_pair_count = sum(
+        not pair["execution_order_consistent"] for pair in pairs
+    )
     return {
         "pair_count": len(pairs),
         "usage_complete_pair_count": len(complete_usage),
+        "control_first_pair_count": control_first_pair_count,
+        "projection_first_pair_count": projection_first_pair_count,
+        "inconsistent_order_pair_count": inconsistent_order_pair_count,
+        "order_balance_satisfied": bool(
+            inconsistent_order_pair_count == 0
+            and control_first_pair_count > 0
+            and projection_first_pair_count > 0
+            and abs(control_first_pair_count - projection_first_pair_count) <= 1
+        ),
         "behavior_regression_count": sum(
             pair["behavior_regression"] for pair in pairs
         ),
