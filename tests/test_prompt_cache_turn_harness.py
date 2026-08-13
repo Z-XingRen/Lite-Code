@@ -172,6 +172,67 @@ def test_prompt_cache_summary_aggregates_rates_and_token_means():
     assert summary["by_scenario"]["append"]["behavior_pass_rate"] == 1.0
 
 
+def test_prompt_cache_smoke_summary_is_never_claimable(tmp_path):
+    rows = _claim_rows(scenarios=("append",), repetitions=1)
+    expected = result_matrix_keys([{"id": "append"}], VARIANTS, 1)
+
+    paths = write_results(
+        rows,
+        tmp_path,
+        expected_keys=expected,
+        require_complete=True,
+        evaluation_identity={
+            "mode": "smoke",
+            "execution_order_policy": "fixed_control_first",
+        },
+    )
+
+    summary = json.loads(paths["summary"].read_text(encoding="utf-8"))
+    claimability = summary["claimability"]
+    assert claimability["claimable"] is False
+    assert "smoke_preflight_only" in claimability["claimability_reasons"]
+    assert claimability["matrix_complete"] is True
+    assert claimability["usage_completeness"] == 1.0
+    assert "Claimable: False" in paths["markdown"].read_text(encoding="utf-8")
+
+
+def test_prompt_cache_complete_formal_matrix_is_claimable(tmp_path):
+    scenarios = ("append", "workspace_refresh", "session_resume")
+    rows = _claim_rows(scenarios=scenarios, repetitions=3)
+    expected = result_matrix_keys(
+        [{"id": scenario} for scenario in scenarios], VARIANTS, 3
+    )
+
+    paths = write_results(
+        rows,
+        tmp_path,
+        expected_keys=expected,
+        require_complete=True,
+        evaluation_identity={
+            "mode": "formal",
+            "execution_order_policy": "counterbalanced_v1",
+        },
+    )
+
+    summary = json.loads(paths["summary"].read_text(encoding="utf-8"))
+    claimability = summary["claimability"]
+    assert claimability == {
+        "behavior_regression_count": 0,
+        "claimability_reasons": [],
+        "claimable": True,
+        "evaluation_mode": "formal",
+        "execution_order_policy": "counterbalanced_v1",
+        "inconsistent_order_pair_count": 0,
+        "matrix_complete": True,
+        "minimum_pair_count": 9,
+        "order_balance_satisfied": True,
+        "pair_count": 9,
+        "paired_matrix_complete": True,
+        "usage_completeness": 1.0,
+    }
+    assert "Claimable: True" in paths["markdown"].read_text(encoding="utf-8")
+
+
 def test_prompt_cache_paired_metrics_compare_matched_rows_only():
     rows = [
         {
@@ -473,3 +534,32 @@ def _row(variant):
         "repeat": 0,
         **{field: 0 for field in RESULT_FIELDS},
     }
+
+
+def _claim_rows(*, scenarios, repetitions):
+    rows = []
+    scenario_indexes = {scenario: index for index, scenario in enumerate(scenarios)}
+    for repeat in range(repetitions):
+        for scenario in scenarios:
+            control_first = (repeat + scenario_indexes[scenario]) % 2 == 0
+            order = (
+                "full_prompt_then_append_projection"
+                if control_first
+                else "append_projection_then_full_prompt"
+            )
+            for position, variant in enumerate(order.split("_then_")):
+                rows.append(
+                    {
+                        **_row(variant),
+                        "scenario": scenario,
+                        "repeat": repeat,
+                        "execution_position": position,
+                        "pair_execution_order": order,
+                        "behavior_pass": True,
+                        "usage_complete": True,
+                        "billable_input_tokens": (
+                            100 if variant == "full_prompt" else 40
+                        ),
+                    }
+                )
+    return rows

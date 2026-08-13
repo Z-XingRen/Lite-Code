@@ -411,13 +411,19 @@ def main(argv=None):
                     mode=mode,
                 )
                 rows.append(row)
-                write_results(rows, output_dir, expected_keys=expected_keys)
+                write_results(
+                    rows,
+                    output_dir,
+                    expected_keys=expected_keys,
+                    evaluation_identity=identity,
+                )
                 print(json.dumps(row, ensure_ascii=False, sort_keys=True), flush=True)
     write_results(
         rows,
         output_dir,
         expected_keys=expected_keys,
         require_complete=True,
+        evaluation_identity=identity,
     )
     return 0
 

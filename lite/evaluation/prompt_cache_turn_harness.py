@@ -12,6 +12,7 @@ from .run_evidence import RunEvidence
 
 MANIFEST_PATH = Path("benchmarks/prompt_cache_turns_v1.json")
 VARIANTS = ("full_prompt", "append_projection")
+MINIMUM_CLAIMABLE_PAIR_COUNT = 9
 RESULT_FIELDS = (
     "execution_position",
     "pair_execution_order",
@@ -308,7 +309,14 @@ def validate_result_matrix(rows, expected_keys, *, require_complete=False):
     }
 
 
-def write_results(rows, output_dir, *, expected_keys=None, require_complete=False):
+def write_results(
+    rows,
+    output_dir,
+    *,
+    expected_keys=None,
+    require_complete=False,
+    evaluation_identity=None,
+):
     """Write hash-bound raw rows and a matrix-aware Markdown summary."""
 
     output_dir = Path(output_dir)
@@ -336,6 +344,7 @@ def write_results(rows, output_dir, *, expected_keys=None, require_complete=Fals
         ordered,
         matrix=matrix,
         results_digest=f"sha256:{digest}",
+        evaluation_identity=evaluation_identity,
     )
     summary_path = output_dir / "summary.json"
     _atomic_write_text(
@@ -343,12 +352,49 @@ def write_results(rows, output_dir, *, expected_keys=None, require_complete=Fals
         json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
     )
     markdown_path = output_dir / "summary.md"
+    claimability = summary["claimability"]
+    claimability_lines = [
+        "## Claimability",
+        "",
+        f"- Claimable: {claimability['claimable']}",
+        f"- Evaluation mode: {claimability['evaluation_mode'] or 'unknown'}",
+        f"- Matrix complete: {claimability['matrix_complete']}",
+        (
+            "- Usage completeness: "
+            f"{claimability['usage_completeness']}"
+        ),
+        (
+            "- Minimum pair count: "
+            f"{claimability['minimum_pair_count']}"
+        ),
+        (
+            "- Order balance satisfied: "
+            f"{claimability['order_balance_satisfied']}"
+        ),
+        (
+            "- Behavior regressions: "
+            f"{claimability['behavior_regression_count']}"
+        ),
+        (
+            "- Reasons: "
+            + (
+                ", ".join(claimability["claimability_reasons"])
+                or "none"
+            )
+        ),
+        "",
+    ]
     if matrix is not None and not matrix["complete"]:
-        text = (
-            "# Prompt Cache Turn Evaluation (Incomplete)\n\n"
-            f"Status: {matrix['completed_count']}/{matrix['expected_count']} result rows.\n\n"
-            f"Results SHA-256: `sha256:{digest}`\n"
-        )
+        lines = [
+            "# Prompt Cache Turn Evaluation (Incomplete)",
+            "",
+            f"Status: {matrix['completed_count']}/{matrix['expected_count']} result rows.",
+            "",
+            f"Results SHA-256: `sha256:{digest}`",
+            "",
+            *claimability_lines,
+        ]
+        text = "\n".join(lines)
         _atomic_write_text(markdown_path, text)
         return {
             "jsonl": jsonl_path,
@@ -368,6 +414,7 @@ def write_results(rows, output_dir, *, expected_keys=None, require_complete=Fals
                 "",
             ]
         )
+    lines.extend(claimability_lines)
     paired = summary["paired"]
     lines.extend(
         [
@@ -415,19 +462,109 @@ def write_results(rows, output_dir, *, expected_keys=None, require_complete=Fals
     }
 
 
-def summarize_results(rows, *, matrix=None, results_digest=""):
+def summarize_results(
+    rows,
+    *,
+    matrix=None,
+    results_digest="",
+    evaluation_identity=None,
+):
     """Build machine-readable aggregate metrics without hiding raw rows."""
 
     ordered = [dict(row) for row in rows]
+    paired = paired_metrics(ordered)
     return {
-        "schema_version": "lite.prompt_cache_turn_summary.v2",
+        "schema_version": "lite.prompt_cache_turn_summary.v3",
         "results_sha256": str(results_digest),
         "matrix": dict(matrix or {}),
         "row_count": len(ordered),
         "overall": _aggregate_rows(ordered),
         "by_variant": _aggregate_groups(ordered, "variant"),
         "by_scenario": _aggregate_groups(ordered, "scenario"),
-        "paired": paired_metrics(ordered),
+        "paired": paired,
+        "claimability": claimability_metrics(
+            matrix=matrix,
+            paired=paired,
+            evaluation_identity=evaluation_identity,
+        ),
+    }
+
+
+def claimability_metrics(*, matrix, paired, evaluation_identity=None):
+    """Decide whether aggregate results support a formal comparative claim."""
+
+    identity = dict(evaluation_identity or {})
+    mode = str(identity.get("mode", ""))
+    order_policy = str(identity.get("execution_order_policy", ""))
+    pair_count = int(paired.get("pair_count", 0) or 0)
+    usage_complete_pair_count = int(
+        paired.get("usage_complete_pair_count", 0) or 0
+    )
+    control_first = int(paired.get("control_first_pair_count", 0) or 0)
+    projection_first = int(
+        paired.get("projection_first_pair_count", 0) or 0
+    )
+    inconsistent_order = int(
+        paired.get("inconsistent_order_pair_count", 0) or 0
+    )
+    behavior_regressions = int(
+        paired.get("behavior_regression_count", 0) or 0
+    )
+    matrix_data = dict(matrix or {})
+    matrix_complete = bool(matrix_data.get("complete", False))
+    expected_count = int(matrix_data.get("expected_count", 0) or 0)
+    paired_matrix_complete = bool(
+        matrix_complete and expected_count and pair_count * len(VARIANTS) == expected_count
+    )
+    usage_completeness = (
+        round(usage_complete_pair_count / pair_count, 6)
+        if pair_count
+        else 0.0
+    )
+    order_balance_satisfied = bool(
+        inconsistent_order == 0
+        and control_first > 0
+        and projection_first > 0
+        and abs(control_first - projection_first) <= 1
+    )
+
+    reasons = []
+    if not identity:
+        reasons.append("evaluation_identity_missing")
+    if mode == "smoke":
+        reasons.append("smoke_preflight_only")
+    elif mode != "formal":
+        reasons.append("formal_mode_required")
+    if order_policy != "counterbalanced_v1":
+        reasons.append("counterbalanced_order_policy_required")
+    if not matrix_complete:
+        reasons.append("complete_matrix_required")
+    if not paired_matrix_complete:
+        reasons.append("complete_paired_matrix_required")
+    if pair_count < MINIMUM_CLAIMABLE_PAIR_COUNT:
+        reasons.append("minimum_pair_count_not_met")
+    if usage_complete_pair_count != pair_count or not pair_count:
+        reasons.append("usage_incomplete")
+    if behavior_regressions:
+        reasons.append("behavior_regressions_present")
+    if inconsistent_order:
+        reasons.append("inconsistent_execution_order")
+    if not order_balance_satisfied:
+        reasons.append("execution_order_balance_required")
+
+    return {
+        "claimable": not reasons,
+        "claimability_reasons": reasons,
+        "evaluation_mode": mode,
+        "execution_order_policy": order_policy,
+        "minimum_pair_count": MINIMUM_CLAIMABLE_PAIR_COUNT,
+        "pair_count": pair_count,
+        "matrix_complete": matrix_complete,
+        "paired_matrix_complete": paired_matrix_complete,
+        "usage_completeness": usage_completeness,
+        "behavior_regression_count": behavior_regressions,
+        "inconsistent_order_pair_count": inconsistent_order,
+        "order_balance_satisfied": order_balance_satisfied,
     }
 
 
