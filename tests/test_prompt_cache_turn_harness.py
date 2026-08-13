@@ -227,12 +227,52 @@ def test_prompt_cache_complete_formal_matrix_is_claimable(tmp_path):
         "inconsistent_order_pair_count": 0,
         "matrix_complete": True,
         "minimum_pair_count": 9,
+        "minimum_pairs_per_scenario": 3,
+        "missing_required_scenarios": [],
         "order_balance_satisfied": True,
         "pair_count": 9,
         "paired_matrix_complete": True,
+        "required_scenarios": [
+            "append",
+            "session_resume",
+            "workspace_refresh",
+        ],
+        "scenario_coverage_satisfied": True,
+        "scenario_pair_counts": {
+            "append": 3,
+            "session_resume": 3,
+            "workspace_refresh": 3,
+        },
+        "underrepresented_scenarios": [],
         "usage_completeness": 1.0,
     }
     assert "Claimable: True" in paths["markdown"].read_text(encoding="utf-8")
+
+
+def test_prompt_cache_formal_claim_requires_all_fixed_scenarios(tmp_path):
+    rows = _claim_rows(scenarios=("append",), repetitions=9)
+    expected = result_matrix_keys([{"id": "append"}], VARIANTS, 9)
+
+    paths = write_results(
+        rows,
+        tmp_path,
+        expected_keys=expected,
+        require_complete=True,
+        evaluation_identity={
+            "mode": "formal",
+            "execution_order_policy": "counterbalanced_v1",
+        },
+    )
+
+    summary = json.loads(paths["summary"].read_text(encoding="utf-8"))
+    claimability = summary["claimability"]
+    assert claimability["claimable"] is False
+    assert claimability["scenario_coverage_satisfied"] is False
+    assert claimability["missing_required_scenarios"] == [
+        "session_resume",
+        "workspace_refresh",
+    ]
+    assert "required_scenarios_missing" in claimability["claimability_reasons"]
 
 
 def test_prompt_cache_paired_metrics_compare_matched_rows_only():

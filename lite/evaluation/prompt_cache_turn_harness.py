@@ -13,6 +13,10 @@ from .run_evidence import RunEvidence
 MANIFEST_PATH = Path("benchmarks/prompt_cache_turns_v1.json")
 VARIANTS = ("full_prompt", "append_projection")
 MINIMUM_CLAIMABLE_PAIR_COUNT = 9
+MINIMUM_CLAIMABLE_PAIRS_PER_SCENARIO = 3
+REQUIRED_CLAIMABLE_SCENARIOS = frozenset(
+    {"append", "workspace_refresh", "session_resume"}
+)
 RESULT_FIELDS = (
     "execution_position",
     "pair_execution_order",
@@ -368,6 +372,14 @@ def write_results(
             f"{claimability['minimum_pair_count']}"
         ),
         (
+            "- Scenario coverage satisfied: "
+            f"{claimability['scenario_coverage_satisfied']}"
+        ),
+        (
+            "- Scenario pair counts: "
+            f"{claimability['scenario_pair_counts']}"
+        ),
+        (
             "- Order balance satisfied: "
             f"{claimability['order_balance_satisfied']}"
         ),
@@ -529,7 +541,7 @@ def summarize_results(
     ordered = [dict(row) for row in rows]
     paired = paired_metrics(ordered)
     return {
-        "schema_version": "lite.prompt_cache_turn_summary.v5",
+        "schema_version": "lite.prompt_cache_turn_summary.v6",
         "results_sha256": str(results_digest),
         "matrix": dict(matrix or {}),
         "row_count": len(ordered),
@@ -565,6 +577,23 @@ def claimability_metrics(*, matrix, paired, evaluation_identity=None):
     behavior_regressions = int(
         paired.get("behavior_regression_count", 0) or 0
     )
+    scenario_metrics = dict(paired.get("by_scenario", {}) or {})
+    scenario_pair_counts = {
+        scenario: int(metrics.get("pair_count", 0) or 0)
+        for scenario, metrics in sorted(scenario_metrics.items())
+    }
+    missing_required_scenarios = sorted(
+        REQUIRED_CLAIMABLE_SCENARIOS - set(scenario_pair_counts)
+    )
+    underrepresented_scenarios = sorted(
+        scenario
+        for scenario in REQUIRED_CLAIMABLE_SCENARIOS
+        if scenario_pair_counts.get(scenario, 0)
+        < MINIMUM_CLAIMABLE_PAIRS_PER_SCENARIO
+    )
+    scenario_coverage_satisfied = bool(
+        not missing_required_scenarios and not underrepresented_scenarios
+    )
     matrix_data = dict(matrix or {})
     matrix_complete = bool(matrix_data.get("complete", False))
     expected_count = int(matrix_data.get("expected_count", 0) or 0)
@@ -598,6 +627,10 @@ def claimability_metrics(*, matrix, paired, evaluation_identity=None):
         reasons.append("complete_paired_matrix_required")
     if pair_count < MINIMUM_CLAIMABLE_PAIR_COUNT:
         reasons.append("minimum_pair_count_not_met")
+    if missing_required_scenarios:
+        reasons.append("required_scenarios_missing")
+    if underrepresented_scenarios:
+        reasons.append("minimum_scenario_pair_count_not_met")
     if usage_complete_pair_count != pair_count or not pair_count:
         reasons.append("usage_incomplete")
     if behavior_regressions:
@@ -613,7 +646,13 @@ def claimability_metrics(*, matrix, paired, evaluation_identity=None):
         "evaluation_mode": mode,
         "execution_order_policy": order_policy,
         "minimum_pair_count": MINIMUM_CLAIMABLE_PAIR_COUNT,
+        "minimum_pairs_per_scenario": MINIMUM_CLAIMABLE_PAIRS_PER_SCENARIO,
         "pair_count": pair_count,
+        "required_scenarios": sorted(REQUIRED_CLAIMABLE_SCENARIOS),
+        "scenario_pair_counts": scenario_pair_counts,
+        "missing_required_scenarios": missing_required_scenarios,
+        "underrepresented_scenarios": underrepresented_scenarios,
+        "scenario_coverage_satisfied": scenario_coverage_satisfied,
         "matrix_complete": matrix_complete,
         "paired_matrix_complete": paired_matrix_complete,
         "usage_completeness": usage_completeness,
