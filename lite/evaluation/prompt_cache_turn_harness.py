@@ -416,6 +416,7 @@ def write_results(
         )
     lines.extend(claimability_lines)
     paired = summary["paired"]
+    order_strata = paired["by_execution_order"]
     lines.extend(
         [
             "## Paired comparison",
@@ -435,6 +436,35 @@ def write_results(
             (
                 "- Mean second-turn cached-token delta: "
                 f"{paired['mean_second_turn_cached_tokens_delta']}"
+            ),
+            "",
+            "## Execution-order strata",
+            "",
+            (
+                "Projection-first minus control-first mean billable-token delta: "
+                f"{paired['projection_first_minus_control_first_mean_billable_input_delta_tokens']}"
+            ),
+            "",
+            (
+                "| Execution order | Pairs | Usage-complete | Behavior regressions | "
+                "Break-even rate | Mean billable delta | Mean billable delta rate |"
+            ),
+            "| --- | --- | --- | --- | --- | --- | --- |",
+            *(
+                "| "
+                + " | ".join(
+                    (
+                        order,
+                        str(metrics["pair_count"]),
+                        str(metrics["usage_complete_pair_count"]),
+                        str(metrics["behavior_regression_count"]),
+                        str(metrics["break_even_pair_rate"]),
+                        str(metrics["mean_billable_input_delta_tokens"]),
+                        str(metrics["mean_billable_input_delta_pct"]),
+                    )
+                )
+                + " |"
+                for order, metrics in order_strata.items()
             ),
             "",
             "## Rows",
@@ -474,7 +504,7 @@ def summarize_results(
     ordered = [dict(row) for row in rows]
     paired = paired_metrics(ordered)
     return {
-        "schema_version": "lite.prompt_cache_turn_summary.v3",
+        "schema_version": "lite.prompt_cache_turn_summary.v4",
         "results_sha256": str(results_digest),
         "matrix": dict(matrix or {}),
         "row_count": len(ordered),
@@ -644,19 +674,27 @@ def paired_metrics(rows):
         for pair in complete_usage
         if pair["billable_input_delta_pct"] is not None
     ]
+    control_first_pairs = [
+        pair
+        for pair in pairs
+        if pair["pair_execution_order"]
+        == "full_prompt_then_append_projection"
+    ]
+    projection_first_pairs = [
+        pair
+        for pair in pairs
+        if pair["pair_execution_order"]
+        == "append_projection_then_full_prompt"
+    ]
+    order_strata = {
+        "control_first": _summarize_pairs(control_first_pairs),
+        "projection_first": _summarize_pairs(projection_first_pairs),
+    }
     return {
         "pair_count": len(pairs),
         "usage_complete_pair_count": len(complete_usage),
-        "control_first_pair_count": sum(
-            pair["pair_execution_order"]
-            == "full_prompt_then_append_projection"
-            for pair in pairs
-        ),
-        "projection_first_pair_count": sum(
-            pair["pair_execution_order"]
-            == "append_projection_then_full_prompt"
-            for pair in pairs
-        ),
+        "control_first_pair_count": len(control_first_pairs),
+        "projection_first_pair_count": len(projection_first_pairs),
         "inconsistent_order_pair_count": sum(
             not pair["execution_order_consistent"] for pair in pairs
         ),
@@ -674,8 +712,58 @@ def paired_metrics(rows):
         "mean_second_turn_cached_tokens_delta": _pair_mean(
             complete_usage, "second_turn_cached_tokens_delta"
         ),
+        "by_execution_order": order_strata,
+        "projection_first_minus_control_first_mean_billable_input_delta_tokens": (
+            _metric_difference(
+                order_strata["projection_first"],
+                order_strata["control_first"],
+                "mean_billable_input_delta_tokens",
+            )
+        ),
+        "projection_first_minus_control_first_mean_billable_input_delta_pct": (
+            _metric_difference(
+                order_strata["projection_first"],
+                order_strata["control_first"],
+                "mean_billable_input_delta_pct",
+            )
+        ),
         "pairs": pairs,
     }
+
+
+def _summarize_pairs(pairs):
+    complete_usage = [pair for pair in pairs if pair["usage_complete"]]
+    pct_pairs = [
+        pair
+        for pair in complete_usage
+        if pair["billable_input_delta_pct"] is not None
+    ]
+    return {
+        "pair_count": len(pairs),
+        "usage_complete_pair_count": len(complete_usage),
+        "behavior_regression_count": sum(
+            pair["behavior_regression"] for pair in pairs
+        ),
+        "break_even_pair_count": sum(pair["break_even"] for pair in pairs),
+        "break_even_pair_rate": _pair_rate(pairs, "break_even"),
+        "mean_billable_input_delta_tokens": _pair_mean(
+            complete_usage, "billable_input_delta_tokens"
+        ),
+        "mean_billable_input_delta_pct": _pair_mean(
+            pct_pairs, "billable_input_delta_pct"
+        ),
+        "mean_second_turn_cached_tokens_delta": _pair_mean(
+            complete_usage, "second_turn_cached_tokens_delta"
+        ),
+    }
+
+
+def _metric_difference(left, right, field):
+    left_value = left.get(field)
+    right_value = right.get(field)
+    if left_value is None or right_value is None:
+        return None
+    return round(float(left_value) - float(right_value), 6)
 
 
 def _aggregate_groups(rows, field):
