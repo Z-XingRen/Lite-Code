@@ -388,6 +388,10 @@ def write_results(
             f"{claimability['behavior_regression_count']}"
         ),
         (
+            "- Behavior-valid pairs: "
+            f"{claimability['behavior_valid_pair_count']}"
+        ),
+        (
             "- Reasons: "
             + (
                 ", ".join(claimability["claimability_reasons"])
@@ -541,7 +545,7 @@ def summarize_results(
     ordered = [dict(row) for row in rows]
     paired = paired_metrics(ordered)
     return {
-        "schema_version": "lite.prompt_cache_turn_summary.v6",
+        "schema_version": "lite.prompt_cache_turn_summary.v7",
         "results_sha256": str(results_digest),
         "matrix": dict(matrix or {}),
         "row_count": len(ordered),
@@ -576,6 +580,9 @@ def claimability_metrics(*, matrix, paired, evaluation_identity=None):
     )
     behavior_regressions = int(
         paired.get("behavior_regression_count", 0) or 0
+    )
+    behavior_valid_pair_count = int(
+        paired.get("behavior_valid_pair_count", 0) or 0
     )
     scenario_metrics = dict(paired.get("by_scenario", {}) or {})
     scenario_pair_counts = {
@@ -635,6 +642,8 @@ def claimability_metrics(*, matrix, paired, evaluation_identity=None):
         reasons.append("usage_incomplete")
     if behavior_regressions:
         reasons.append("behavior_regressions_present")
+    if behavior_valid_pair_count != pair_count or not pair_count:
+        reasons.append("behavior_validation_failed")
     if inconsistent_order:
         reasons.append("inconsistent_execution_order")
     if not order_balance_satisfied:
@@ -656,6 +665,12 @@ def claimability_metrics(*, matrix, paired, evaluation_identity=None):
         "matrix_complete": matrix_complete,
         "paired_matrix_complete": paired_matrix_complete,
         "usage_completeness": usage_completeness,
+        "behavior_valid_pair_count": behavior_valid_pair_count,
+        "behavior_completeness": (
+            round(behavior_valid_pair_count / pair_count, 6)
+            if pair_count
+            else 0.0
+        ),
         "behavior_regression_count": behavior_regressions,
         "inconsistent_order_pair_count": inconsistent_order,
         "order_balance_satisfied": order_balance_satisfied,
@@ -699,6 +714,9 @@ def paired_metrics(rows):
         behavior_regression = bool(
             control.get("behavior_pass") and not treatment.get("behavior_pass")
         )
+        behavior_valid = bool(
+            control.get("behavior_pass") and treatment.get("behavior_pass")
+        )
         break_even = bool(
             usage_complete
             and treatment_billable < control_billable
@@ -721,6 +739,7 @@ def paired_metrics(rows):
                 "control_behavior_pass": bool(control.get("behavior_pass")),
                 "treatment_behavior_pass": bool(treatment.get("behavior_pass")),
                 "behavior_regression": behavior_regression,
+                "behavior_valid": behavior_valid,
                 "control_billable_input_tokens": control_billable,
                 "treatment_billable_input_tokens": treatment_billable,
                 "billable_input_delta_tokens": delta_tokens,
@@ -772,6 +791,9 @@ def paired_metrics(rows):
         "behavior_regression_count": sum(
             pair["behavior_regression"] for pair in pairs
         ),
+        "behavior_valid_pair_count": sum(
+            pair["behavior_valid"] for pair in pairs
+        ),
         "break_even_pair_count": sum(pair["break_even"] for pair in pairs),
         "break_even_pair_rate": _pair_rate(pairs, "break_even"),
         "mean_billable_input_delta_tokens": _pair_mean(
@@ -815,6 +837,9 @@ def _summarize_pairs(pairs):
         "usage_complete_pair_count": len(complete_usage),
         "behavior_regression_count": sum(
             pair["behavior_regression"] for pair in pairs
+        ),
+        "behavior_valid_pair_count": sum(
+            pair["behavior_valid"] for pair in pairs
         ),
         "break_even_pair_count": sum(pair["break_even"] for pair in pairs),
         "break_even_pair_rate": _pair_rate(pairs, "break_even"),

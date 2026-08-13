@@ -219,7 +219,9 @@ def test_prompt_cache_complete_formal_matrix_is_claimable(tmp_path):
     summary = json.loads(paths["summary"].read_text(encoding="utf-8"))
     claimability = summary["claimability"]
     assert claimability == {
+        "behavior_completeness": 1.0,
         "behavior_regression_count": 0,
+        "behavior_valid_pair_count": 9,
         "claimability_reasons": [],
         "claimable": True,
         "evaluation_mode": "formal",
@@ -275,6 +277,36 @@ def test_prompt_cache_formal_claim_requires_all_fixed_scenarios(tmp_path):
     assert "required_scenarios_missing" in claimability["claimability_reasons"]
 
 
+def test_prompt_cache_formal_claim_requires_both_variants_to_pass(tmp_path):
+    scenarios = ("append", "workspace_refresh", "session_resume")
+    rows = _claim_rows(scenarios=scenarios, repetitions=3)
+    for row in rows:
+        if row["scenario"] == "append" and row["repeat"] == 0:
+            row["behavior_pass"] = False
+    expected = result_matrix_keys(
+        [{"id": scenario} for scenario in scenarios], VARIANTS, 3
+    )
+
+    paths = write_results(
+        rows,
+        tmp_path,
+        expected_keys=expected,
+        require_complete=True,
+        evaluation_identity={
+            "mode": "formal",
+            "execution_order_policy": "counterbalanced_v1",
+        },
+    )
+
+    summary = json.loads(paths["summary"].read_text(encoding="utf-8"))
+    claimability = summary["claimability"]
+    assert claimability["claimable"] is False
+    assert claimability["behavior_regression_count"] == 0
+    assert claimability["behavior_valid_pair_count"] == 8
+    assert claimability["behavior_completeness"] == 0.888889
+    assert "behavior_validation_failed" in claimability["claimability_reasons"]
+
+
 def test_prompt_cache_paired_metrics_compare_matched_rows_only():
     rows = [
         {
@@ -316,6 +348,7 @@ def test_prompt_cache_paired_metrics_compare_matched_rows_only():
     assert paired["projection_first_pair_count"] == 0
     assert paired["inconsistent_order_pair_count"] == 0
     assert paired["behavior_regression_count"] == 0
+    assert paired["behavior_valid_pair_count"] == 1
     assert paired["break_even_pair_count"] == 1
     assert paired["break_even_pair_rate"] == 1.0
     assert paired["mean_billable_input_delta_tokens"] == -6624.0
@@ -371,6 +404,7 @@ def test_prompt_cache_paired_metrics_stratify_execution_order():
     assert paired["by_execution_order"] == {
         "control_first": {
             "behavior_regression_count": 0,
+            "behavior_valid_pair_count": 1,
             "break_even_pair_count": 1,
             "break_even_pair_rate": 1.0,
             "mean_billable_input_delta_pct": -0.6,
@@ -381,6 +415,7 @@ def test_prompt_cache_paired_metrics_stratify_execution_order():
         },
         "projection_first": {
             "behavior_regression_count": 0,
+            "behavior_valid_pair_count": 1,
             "break_even_pair_count": 1,
             "break_even_pair_rate": 1.0,
             "mean_billable_input_delta_pct": -0.833333,
@@ -419,6 +454,7 @@ def test_prompt_cache_paired_metrics_stratify_scenarios():
     assert paired["by_scenario"] == {
         "append": {
             "behavior_regression_count": 0,
+            "behavior_valid_pair_count": 2,
             "break_even_pair_count": 2,
             "break_even_pair_rate": 1.0,
             "mean_billable_input_delta_pct": -0.6,
@@ -429,6 +465,7 @@ def test_prompt_cache_paired_metrics_stratify_scenarios():
         },
         "workspace_refresh": {
             "behavior_regression_count": 0,
+            "behavior_valid_pair_count": 2,
             "break_even_pair_count": 2,
             "break_even_pair_rate": 1.0,
             "mean_billable_input_delta_pct": -0.25,
