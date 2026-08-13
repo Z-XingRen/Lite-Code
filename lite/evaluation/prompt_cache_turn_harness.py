@@ -417,6 +417,7 @@ def write_results(
     lines.extend(claimability_lines)
     paired = summary["paired"]
     order_strata = paired["by_execution_order"]
+    scenario_strata = paired["by_scenario"]
     lines.extend(
         [
             "## Paired comparison",
@@ -467,6 +468,30 @@ def write_results(
                 for order, metrics in order_strata.items()
             ),
             "",
+            "## Scenario strata",
+            "",
+            (
+                "| Scenario | Pairs | Usage-complete | Behavior regressions | "
+                "Break-even rate | Mean billable delta | Mean billable delta rate |"
+            ),
+            "| --- | --- | --- | --- | --- | --- | --- |",
+            *(
+                "| "
+                + " | ".join(
+                    (
+                        scenario,
+                        str(metrics["pair_count"]),
+                        str(metrics["usage_complete_pair_count"]),
+                        str(metrics["behavior_regression_count"]),
+                        str(metrics["break_even_pair_rate"]),
+                        str(metrics["mean_billable_input_delta_tokens"]),
+                        str(metrics["mean_billable_input_delta_pct"]),
+                    )
+                )
+                + " |"
+                for scenario, metrics in scenario_strata.items()
+            ),
+            "",
             "## Rows",
             "",
         ]
@@ -504,7 +529,7 @@ def summarize_results(
     ordered = [dict(row) for row in rows]
     paired = paired_metrics(ordered)
     return {
-        "schema_version": "lite.prompt_cache_turn_summary.v4",
+        "schema_version": "lite.prompt_cache_turn_summary.v5",
         "results_sha256": str(results_digest),
         "matrix": dict(matrix or {}),
         "row_count": len(ordered),
@@ -690,6 +715,13 @@ def paired_metrics(rows):
         "control_first": _summarize_pairs(control_first_pairs),
         "projection_first": _summarize_pairs(projection_first_pairs),
     }
+    scenarios = sorted({pair["scenario"] for pair in pairs})
+    scenario_strata = {
+        scenario: _summarize_pairs(
+            [pair for pair in pairs if pair["scenario"] == scenario]
+        )
+        for scenario in scenarios
+    }
     return {
         "pair_count": len(pairs),
         "usage_complete_pair_count": len(complete_usage),
@@ -713,6 +745,7 @@ def paired_metrics(rows):
             complete_usage, "second_turn_cached_tokens_delta"
         ),
         "by_execution_order": order_strata,
+        "by_scenario": scenario_strata,
         "projection_first_minus_control_first_mean_billable_input_delta_tokens": (
             _metric_difference(
                 order_strata["projection_first"],

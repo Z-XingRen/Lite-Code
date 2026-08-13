@@ -130,6 +130,7 @@ def test_prompt_cache_result_matrix_and_summary_are_completeness_bound(tmp_path)
     assert all(field in markdown for field in RESULT_FIELDS)
     assert "## Paired comparison" in markdown
     assert "## Execution-order strata" in markdown
+    assert "## Scenario strata" in markdown
 
 
 def test_prompt_cache_summary_aggregates_rates_and_token_means():
@@ -361,6 +362,42 @@ def test_prompt_cache_paired_metrics_stratify_execution_order():
         ]
         == -0.233333
     )
+
+
+def test_prompt_cache_paired_metrics_stratify_scenarios():
+    rows = _claim_rows(
+        scenarios=("append", "workspace_refresh"), repetitions=2
+    )
+    for row in rows:
+        if row["scenario"] == "workspace_refresh":
+            row["billable_input_tokens"] = (
+                160 if row["variant"] == "full_prompt" else 120
+            )
+
+    paired = paired_metrics(rows)
+
+    assert paired["by_scenario"] == {
+        "append": {
+            "behavior_regression_count": 0,
+            "break_even_pair_count": 2,
+            "break_even_pair_rate": 1.0,
+            "mean_billable_input_delta_pct": -0.6,
+            "mean_billable_input_delta_tokens": -60.0,
+            "mean_second_turn_cached_tokens_delta": 0.0,
+            "pair_count": 2,
+            "usage_complete_pair_count": 2,
+        },
+        "workspace_refresh": {
+            "behavior_regression_count": 0,
+            "break_even_pair_count": 2,
+            "break_even_pair_rate": 1.0,
+            "mean_billable_input_delta_pct": -0.25,
+            "mean_billable_input_delta_tokens": -40.0,
+            "mean_second_turn_cached_tokens_delta": 0.0,
+            "pair_count": 2,
+            "usage_complete_pair_count": 2,
+        },
+    }
 
 
 @pytest.mark.parametrize(
