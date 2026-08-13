@@ -17,6 +17,7 @@ RESULT_FIELDS = (
     "usage_complete",
     "provider_cache_hit",
     "prompt_cache_key_stable",
+    "initial_projection_match",
     "model_call_count",
     "input_tokens",
     "cached_tokens",
@@ -168,6 +169,7 @@ def row_from_turns(scenario, turns, *, variant, repeat, errors=None):
         if expected_reused
         else "unsupported"
     )
+    expected_initial_reason = "missing" if expected_reused else "unsupported"
     answer_match = bool(turns) and all(turn.get("answer_match") for turn in turns)
     expected_context_refresh = bool(
         expected_reused and scenario.get("between_turns") == "workspace_refresh"
@@ -176,6 +178,12 @@ def row_from_turns(scenario, turns, *, variant, repeat, errors=None):
         turn.get("status") == "completed"
         and turn.get("stop_reason") == "final_answer_returned"
         for turn in turns
+    )
+    first = turns[0] if turns else {}
+    initial_projection_match = (
+        not bool(first.get("cache_projection_reused"))
+        and str(first.get("cache_projection_reason", ""))
+        == expected_initial_reason
     )
     projection_match = (
         bool(second.get("cache_projection_reused")) == expected_reused
@@ -204,6 +212,7 @@ def row_from_turns(scenario, turns, *, variant, repeat, errors=None):
         "behavior_pass": bool(
             answer_match
             and completed_turns
+            and initial_projection_match
             and projection_match
             and duplicate_count == 0
             and model_call_count == 2
@@ -213,6 +222,7 @@ def row_from_turns(scenario, turns, *, variant, repeat, errors=None):
         ),
         "answer_match": answer_match,
         "projection_match": projection_match,
+        "initial_projection_match": initial_projection_match,
         "usage_complete": bool(turns) and all(
             turn.get("usage_complete") for turn in turns
         ),

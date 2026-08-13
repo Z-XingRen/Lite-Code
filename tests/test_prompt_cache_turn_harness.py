@@ -66,6 +66,7 @@ def test_prompt_cache_row_requires_expected_projection_and_clean_requests():
     )
 
     assert row["behavior_pass"] is True
+    assert row["initial_projection_match"] is True
     assert row["usage_complete"] is True
     assert row["provider_cache_hit"] is True
     assert row["prompt_cache_key_stable"] is True
@@ -76,6 +77,14 @@ def test_prompt_cache_row_requires_expected_projection_and_clean_requests():
         scenario, turns, variant="append_projection", repeat=0
     )
     assert failed["behavior_pass"] is False
+
+    turns[0]["cache_projection_reused"] = True
+    turns[0]["cache_projection_reason"] = "append"
+    failed_initial = row_from_turns(
+        scenario, turns, variant="append_projection", repeat=0
+    )
+    assert failed_initial["initial_projection_match"] is False
+    assert failed_initial["behavior_pass"] is False
 
 
 def test_prompt_cache_result_matrix_and_summary_are_completeness_bound(tmp_path):
@@ -146,6 +155,7 @@ def test_prompt_cache_runner_executes_cross_turn_projection_scenarios(
     )
 
     assert row["behavior_pass"] is True
+    assert row["initial_projection_match"] is True
     assert row["cache_projection_reused"] is True
     assert row["cache_projection_reason"] == expected_reason
     assert row["cache_projection_context_refreshed"] is context_refreshed
@@ -183,6 +193,7 @@ def test_prompt_cache_runner_full_prompt_control_disables_projection(
     )
 
     assert row["behavior_pass"] is True
+    assert row["initial_projection_match"] is True
     assert row["cache_projection_reused"] is False
     assert row["cache_projection_reason"] == "unsupported"
 
