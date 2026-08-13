@@ -284,6 +284,51 @@ def test_prompt_cache_identity_rejects_unbound_or_changed_partial_results(tmp_pa
         )
 
 
+def test_prompt_cache_identity_distinguishes_smoke_and_formal_modes():
+    manifest = {
+        "benchmark_id": "prompt-cache-test",
+        "scenarios": [{"id": "append"}],
+    }
+    config = SimpleNamespace(
+        name="openai",
+        protocol="openai",
+        model="gpt-test",
+        reasoning_effort="medium",
+        base_url="https://example.test/v1",
+        api_key="secret",
+    )
+
+    smoke = run_prompt_cache_turn_harness.build_identity(
+        manifest, config, VARIANTS, 1, mode="smoke"
+    )
+    formal = run_prompt_cache_turn_harness.build_identity(
+        manifest, config, VARIANTS, 3, mode="formal"
+    )
+
+    assert smoke["mode"] == "smoke"
+    assert formal["mode"] == "formal"
+    assert smoke != formal
+
+
+def test_prompt_cache_smoke_rejects_non_fixed_overrides(monkeypatch):
+    monkeypatch.setattr(
+        run_prompt_cache_turn_harness,
+        "provider_metadata",
+        lambda: pytest.fail("provider config should not be loaded"),
+    )
+
+    with pytest.raises(ValueError, match="fixes repetitions at 1"):
+        run_prompt_cache_turn_harness.main(["--smoke", "--repetitions", "2"])
+    with pytest.raises(ValueError, match="fixes the scenario at append"):
+        run_prompt_cache_turn_harness.main(
+            ["--smoke", "--scenario-ids", "session_resume"]
+        )
+    with pytest.raises(ValueError, match="requires both fixed variants"):
+        run_prompt_cache_turn_harness.main(
+            ["--smoke", "--variants", "append_projection"]
+        )
+
+
 def _usage(input_tokens, cached_tokens):
     return {
         "provider_protocol": "openai",

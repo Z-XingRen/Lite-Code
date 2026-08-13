@@ -46,12 +46,13 @@ RUNTIME_IDENTITY_IGNORED_PARTS = frozenset(
 RUNTIME_IDENTITY_IGNORED_SUFFIXES = frozenset({".pyc", ".pyo", ".tmp", ".temp"})
 
 
-def build_identity(manifest, config, variants, repetitions):
+def build_identity(manifest, config, variants, repetitions, *, mode="formal"):
     """Bind resumable results to runtime, manifest, and provider settings."""
 
     return {
         "schema_version": "lite.prompt_cache_turn_identity.v1",
         "benchmark_id": manifest["benchmark_id"],
+        "mode": str(mode),
         "git_commit": _git_commit(),
         "runtime_source_sha256": _runtime_source_sha256(),
         "config_sha256": _file_sha256(ROOT / ".lite.toml"),
@@ -68,8 +69,12 @@ def build_identity(manifest, config, variants, repetitions):
     }
 
 
-def assert_identity_unchanged(expected, manifest, config, variants, repetitions):
-    current = build_identity(manifest, config, variants, repetitions)
+def assert_identity_unchanged(
+    expected, manifest, config, variants, repetitions, *, mode="formal"
+):
+    current = build_identity(
+        manifest, config, variants, repetitions, mode=mode
+    )
     if current != expected:
         raise RuntimeError(
             "prompt-cache runtime or configuration changed during evaluation; "
@@ -282,7 +287,14 @@ def _file_sha256(path):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--output-dir", default=str(ROOT / "artifacts" / "prompt-cache-turns-v1")
+        "--output-dir",
+        default=None,
+        help="Artifact directory; smoke and formal runs use separate defaults.",
+    )
+    parser.add_argument(
+        "--smoke",
+        action="store_true",
+        help="Run the fixed append scenario once across both variants.",
     )
     parser.add_argument("--repetitions", type=int, default=0)
     parser.add_argument("--scenario-ids", default="")
@@ -291,14 +303,28 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     manifest = load_manifest(ROOT)
-    repetitions = int(args.repetitions or manifest["repetitions"])
-    if repetitions < 3:
-        raise ValueError("prompt-cache turn harness requires at least 3 repetitions")
     variants = tuple(item.strip() for item in args.variants.split(",") if item.strip())
     unknown_variants = sorted(set(variants) - set(VARIANTS))
     if not variants or unknown_variants:
         raise ValueError(f"variants must be selected from {list(VARIANTS)}")
-    scenarios = _select_scenarios(manifest["scenarios"], args.scenario_ids)
+    if args.smoke:
+        if args.repetitions not in {0, 1}:
+            raise ValueError("smoke mode fixes repetitions at 1")
+        if args.scenario_ids and args.scenario_ids.strip() != "append":
+            raise ValueError("smoke mode fixes the scenario at append")
+        if variants != VARIANTS:
+            raise ValueError("smoke mode requires both fixed variants")
+        mode = "smoke"
+        repetitions = 1
+        scenarios = _select_scenarios(manifest["scenarios"], "append")
+    else:
+        mode = "formal"
+        repetitions = int(args.repetitions or manifest["repetitions"])
+        if repetitions < 3:
+            raise ValueError(
+                "prompt-cache turn harness requires at least 3 repetitions"
+            )
+        scenarios = _select_scenarios(manifest["scenarios"], args.scenario_ids)
     selected_manifest = {**manifest, "scenarios": scenarios}
     config = provider_metadata()
     capability_probe = make_client(config)
@@ -307,9 +333,20 @@ def main(argv=None):
             "prompt-cache turn harness requires a provider client with "
             "append-only prompt-cache support"
         )
-    output_dir = Path(args.output_dir).resolve()
+    default_output = (
+        ROOT / "artifacts" / "prompt-cache-turns-v1-smoke"
+        if args.smoke
+        else ROOT / "artifacts" / "prompt-cache-turns-v1"
+    )
+    output_dir = Path(args.output_dir or default_output).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
-    identity = build_identity(selected_manifest, config, variants, repetitions)
+    identity = build_identity(
+        selected_manifest,
+        config,
+        variants,
+        repetitions,
+        mode=mode,
+    )
     ensure_evaluation_identity(output_dir, identity)
 
     expected_keys = result_matrix_keys(scenarios, variants, repetitions)
@@ -332,7 +369,12 @@ def main(argv=None):
                 if key in completed:
                     continue
                 assert_identity_unchanged(
-                    identity, selected_manifest, config, variants, repetitions
+                    identity,
+                    selected_manifest,
+                    config,
+                    variants,
+                    repetitions,
+                    mode=mode,
                 )
                 row = run_scenario(
                     scenario,
@@ -343,7 +385,12 @@ def main(argv=None):
                     timeout=args.turn_timeout,
                 )
                 assert_identity_unchanged(
-                    identity, selected_manifest, config, variants, repetitions
+                    identity,
+                    selected_manifest,
+                    config,
+                    variants,
+                    repetitions,
+                    mode=mode,
                 )
                 rows.append(row)
                 write_results(rows, output_dir, expected_keys=expected_keys)

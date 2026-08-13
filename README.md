@@ -275,10 +275,12 @@ LITE_LIVE_SMOKE=1 python -m pytest tests/test_release_smoke.py -q
 验证跨用户 turn 的 append-only prompt cache projection：
 
 ~~~bash
+python scripts/run_prompt_cache_turn_harness.py --smoke
 python scripts/run_prompt_cache_turn_harness.py --output-dir artifacts/prompt-cache-turns-v1
 ~~~
 
-该命令固定运行普通追加、workspace refresh 和 session resume 三种双 turn
+`--smoke` 固定只运行普通追加场景的两个变体，共 4 次 provider 调用，并写入
+独立 smoke 目录。正式命令固定运行普通追加、workspace refresh 和 session resume 三种双 turn
 场景，并以 full-prompt control 对照 append projection。结果同时记录运行时
 projection 决策、provider 实际 cached tokens、billable input tokens 和逐 turn
 run evidence；不完整矩阵或运行时/config identity 变化会被拒绝。
