@@ -272,6 +272,23 @@ LITE_LIVE_SMOKE=1 python -m pytest tests/test_release_smoke.py -q
 
 真实 provider 测试需要可用的 API key 和 endpoint；普通单元测试不应依赖网络。
 
+运行冻结的 100 事件 Compaction/Rewind/Resume 状态恢复基准：
+
+~~~powershell
+.\.venv\Scripts\python.exe scripts\run_long_session_state_benchmark.py --validate-only
+.\.venv\Scripts\python.exe scripts\run_long_session_state_benchmark.py
+~~~
+
+真实运行从 `.lite.toml` 读取 provider 和 model，固定 temperature 0，默认重复
+5 次。它分别评测完整历史、增量压缩历史和 Resume 恢复上下文，并输出任务正确率、
+20 题正确率、关键事实召回率、陈旧事实误用率，并将可比的 probe Token 与
+compaction/total/cached/billable Token 分开报告。压缩构建和最终探测使用独立的
+append-only cache lane，Resume 从磁盘 checkpoint 进入全新对话。中断后可加
+`--resume-existing` 复用 identity 一致的完整轮次。Provider 不可用时结果为
+`blocked`，不会把调用失败记成模型 0 分。
+冻结数据与人工复核说明见
+[`benchmarks/long_session_state_v1/README.md`](benchmarks/long_session_state_v1/README.md)。
+
 验证跨用户 turn 的 append-only prompt cache projection：
 
 ~~~bash

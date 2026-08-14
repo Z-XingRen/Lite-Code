@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "dataset_id": "atlas-long-session-state-v1",
+  "frozen_at": "2026-08-13",
+  "freeze_status": "candidate_frozen",
+  "human_review": "required before publishing cross-solution results",
+  "event_count": 100,
+  "question_count": 20,
+  "event_type_counts": {
+    "checkpoint": 6,
+    "decision": 14,
+    "decision_revoke": 5,
+    "requirement_update": 18,
+    "resume": 3,
+    "retry": 5,
+    "rewind": 3,
+    "tool_call": 10,
+    "tool_failure": 5,
+    "tool_result": 11,
+    "user_requirement": 20
+  },
+  "sha256": {
+    "events.jsonl": "c26d28756517e390483559be82b47f1e85422f0692297ef29059aef0ab73f2cb",
+    "ground_truth.json": "2c370c07decef6ac1d4dfc6a686716d082094d0266b0bd434f9719cc739c6054"
+  }
+}
