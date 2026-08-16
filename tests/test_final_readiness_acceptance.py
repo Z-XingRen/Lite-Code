@@ -208,6 +208,97 @@ def test_enforce_readiness_accepts_fresh_structured_compile_receipt(
     assert signal["last_successful_verification_sequence"] > signal["last_mutation_sequence"]
 
 
+def test_recover_from_shell_search_policy_denial_then_verify_and_finish(tmp_path):
+    compile_command = shell_join([sys.executable, "-m", "py_compile", "app.py"])
+    agent = build_agent(
+        tmp_path,
+        [
+            '<tool>{"name":"run_shell","args":{"command":"grep -R VALUE .","timeout":20}}</tool>',
+            '<tool>{"name":"search","args":{"pattern":"VALUE","path":"."}}</tool>',
+            '<tool name="write_file" path="app.py"><content>VALUE = 1\n</content></tool>',
+            f'<tool>{{"name":"run_shell","args":{{"command":{json.dumps(compile_command)},"timeout":20}}}}</tool>',
+            "<final>Recovered and verified.</final>",
+        ],
+        final_readiness_mode="enforce",
+        max_steps=6,
+    )
+
+    events = list(agent.engine.run_turn("create and verify app.py"))
+
+    assert events[-2]["type"] == "final"
+    assert events[-2]["content"] == "Recovered and verified."
+    report = json.loads(
+        (agent.current_run_dir / "report.json").read_text(encoding="utf-8")
+    )
+    governance = report["evidence_summaries"]["governance_summary"]
+    assert governance["hard_safety_denial_count"] == 0
+    assert governance["recoverable_policy_denial_count"] == 1
+    assert report["evidence_summaries"]["completion_contract"]["ready"] is True
+
+
+def test_recover_from_repeated_call_with_new_verification_command(tmp_path):
+    repeated_command = shell_join([sys.executable, "-c", "print('probe')"])
+    compile_command = shell_join([sys.executable, "-m", "py_compile", "app.py"])
+    repeated_tool = "<tool>" + json.dumps(
+        {
+            "name": "run_shell",
+            "args": {"command": repeated_command, "timeout": 20},
+        }
+    ) + "</tool>"
+    agent = build_agent(
+        tmp_path,
+        [
+            repeated_tool,
+            repeated_tool,
+            repeated_tool,
+            '<tool name="write_file" path="app.py"><content>VALUE = 1\n</content></tool>',
+            f'<tool>{{"name":"run_shell","args":{{"command":{json.dumps(compile_command)},"timeout":20}}}}</tool>',
+            "<final>Used a fresh verification command.</final>",
+        ],
+        final_readiness_mode="enforce",
+        max_steps=8,
+    )
+
+    events = list(agent.engine.run_turn("create and verify app.py"))
+
+    assert events[-2]["type"] == "final"
+    report = json.loads(
+        (agent.current_run_dir / "report.json").read_text(encoding="utf-8")
+    )
+    governance = report["evidence_summaries"]["governance_summary"]
+    assert governance["recoverable_policy_denial_reasons"] == {
+        "repeated_identical_call": 1
+    }
+    assert governance["hard_safety_denial_count"] == 0
+    assert report["evidence_summaries"]["completion_contract"]["ready"] is True
+
+
+def test_workspace_escape_denial_still_blocks_after_valid_verification(tmp_path):
+    compile_command = shell_join([sys.executable, "-m", "py_compile", "app.py"])
+    agent = build_agent(
+        tmp_path,
+        [
+            '<tool>{"name":"read_file","args":{"path":"../outside.txt","start":1,"end":1}}</tool>',
+            '<tool name="write_file" path="app.py"><content>VALUE = 1\n</content></tool>',
+            f'<tool>{{"name":"run_shell","args":{{"command":{json.dumps(compile_command)},"timeout":20}}}}</tool>',
+            "<final>This must remain blocked.</final>",
+        ],
+        final_readiness_mode="enforce",
+        max_steps=5,
+    )
+
+    events = list(agent.engine.run_turn("attempt escape, then create app.py"))
+
+    assert events[-1]["stop_reason"] == "final_gate_blocked"
+    report = json.loads(
+        (agent.current_run_dir / "report.json").read_text(encoding="utf-8")
+    )
+    governance = report["evidence_summaries"]["governance_summary"]
+    assert governance["hard_safety_denial_count"] == 1
+    contract = report["evidence_summaries"]["completion_contract"]
+    assert "hard_safety_denial" in contract["blocking_codes"]
+
+
 def test_warn_final_readiness_records_net_negative_llm_compaction(tmp_path):
     agent = build_agent(
         tmp_path,

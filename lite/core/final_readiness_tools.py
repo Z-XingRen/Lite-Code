@@ -8,6 +8,7 @@ from .final_readiness_context import context_pressure_compaction_failed
 from .final_readiness_context import provider_usage_unavailable
 from .final_readiness_context import replacement_ledger_disabled_under_pressure
 from .final_readiness_context import tier3_summary_without_delta
+from .governance import HARD_SAFETY_DENIAL_REASONS
 
 UNRESOLVED_TODO_STATUS = {"pending", "in_progress"}
 
@@ -26,8 +27,15 @@ def readiness_reasons(task_state, workspace_root=None):
     if _has_partial_success_workspace_change(task_state):
         reasons.append("partial_success_workspace_changed")
     governance = dict(summaries.get("governance_summary", {}) or {})
-    if int(governance.get("deny_count", 0) or 0):
-        reasons.append("governance_denial")
+    hard_denials, recoverable_denials, unclassified_denials = (
+        _governance_denial_counts(governance)
+    )
+    if hard_denials:
+        reasons.append("hard_safety_denial")
+    if recoverable_denials:
+        reasons.append("recoverable_policy_denial")
+    if unclassified_denials:
+        reasons.append("unclassified_policy_denial")
     if _has_unresolved_high_priority_todo(task_state):
         reasons.append("unresolved_high_priority_todo")
     context = dict(summaries.get("context_budget_summary", {}) or {})
@@ -46,6 +54,31 @@ def readiness_reasons(task_state, workspace_root=None):
     if context_pressure_compaction_failed(context):
         reasons.append("context_pressure_compaction_failed")
     return reasons
+
+
+def _governance_denial_counts(governance):
+    hard = int(governance.get("hard_safety_denial_count", 0) or 0)
+    recoverable = int(
+        governance.get("recoverable_policy_denial_count", 0) or 0
+    )
+    unclassified = int(
+        governance.get("unclassified_policy_denial_count", 0) or 0
+    )
+    classified = hard + recoverable + unclassified
+    total = int(governance.get("deny_count", 0) or 0)
+    if classified >= total:
+        return hard, recoverable, unclassified
+    # Compatibility for v1 summaries: only explicit safety reasons become hard;
+    # everything else remains visible and fail-closed as unclassified policy.
+    reasons = dict(governance.get("reasons", {}) or {})
+    legacy_hard = sum(
+        int(count or 0)
+        for reason, count in reasons.items()
+        if reason in HARD_SAFETY_DENIAL_REASONS
+    )
+    missing = total - classified
+    legacy_hard = min(legacy_hard, missing)
+    return hard + legacy_hard, recoverable, unclassified + missing - legacy_hard
 
 
 def verification_is_fresh(task_state):

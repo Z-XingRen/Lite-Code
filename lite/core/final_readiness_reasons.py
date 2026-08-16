@@ -12,9 +12,17 @@ READINESS_REASONS = {
         "hard",
         "Verification did not succeed after the last workspace mutation.",
     ),
-    "governance_denial": (
+    "hard_safety_denial": (
         "hard",
-        "A runtime governance decision denied a requested tool action.",
+        "A hard safety policy permanently denied an unsafe action in this run.",
+    ),
+    "recoverable_policy_denial": (
+        "soft",
+        "A recoverable tool-policy error occurred; use the correct tool or arguments.",
+    ),
+    "unclassified_policy_denial": (
+        "hard",
+        "An unclassified tool-policy denial occurred and must be reviewed before completion.",
     ),
     "partial_success_workspace_changed": (
         "hard",

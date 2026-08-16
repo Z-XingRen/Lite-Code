@@ -6,7 +6,9 @@ from lite.core.final_readiness import (
     extract_required_artifact_paths,
     readiness_notice,
 )
+from lite.core.evidence_summaries import update_evidence_summaries
 from lite.core.final_readiness_tools import readiness_reasons
+from lite.core.governance import reduce_governance_summary
 from lite.core.task_state import TaskState
 
 
@@ -433,3 +435,177 @@ def test_final_readiness_summary_has_schema_version():
 
     assert summary["schema_version"] == "lite.final_readiness_summary.v1"
     assert "remind_count" not in summary
+
+
+def _governance_summary(*events):
+    summary = {}
+    for event in events:
+        summary = reduce_governance_summary(summary, event)
+    return summary
+
+
+def test_recoverable_policy_denial_does_not_hard_block_fresh_verification():
+    state = task_state()
+    state.changed_paths = ["src/app.py"]
+    state.evidence_summaries = {
+        "governance_summary": _governance_summary(
+            {
+                "decision": "deny",
+                "decision_type": "tool_policy",
+                "reason_code": "shell_search_should_use_tool",
+                "security_event_type": "tool_policy",
+            }
+        ),
+        "verification_signal": {
+            "state": "passed",
+            "last_mutation_sequence": 3,
+            "last_successful_verification_sequence": 4,
+        },
+    }
+
+    decision = evaluate_final_readiness(state, "enforce")
+
+    assert decision["decision"] == "warn"
+    assert decision["action"] == "none"
+    assert decision["reasons"] == ["recoverable_policy_denial"]
+    contract = decision["completion_contract"]
+    assert contract["ready"] is True
+    assert contract["blocking_codes"] == []
+
+
+def test_repeated_call_and_ordinary_invalid_arguments_are_recoverable():
+    for reason in ("repeated_identical_call", "invalid_arguments"):
+        state = task_state()
+        state.evidence_summaries = {
+            "governance_summary": _governance_summary(
+                {
+                    "decision": "deny",
+                    "decision_type": "tool_validation",
+                    "reason_code": reason,
+                    "security_event_type": "",
+                }
+            )
+        }
+
+        decision = evaluate_final_readiness(state, "enforce")
+
+        assert decision["decision"] == "warn"
+        assert decision["action"] == "none"
+        assert decision["reasons"] == ["recoverable_policy_denial"]
+
+
+def test_secret_exposure_and_workspace_escape_remain_permanent_hard_denials():
+    for reason in ("secret_exposure", "workspace_escape"):
+        state = task_state()
+        state.evidence_summaries = {
+            "governance_summary": _governance_summary(
+                {
+                    "decision": "deny",
+                    "decision_type": "permission",
+                    "reason_code": reason,
+                    "security_event_type": reason,
+                }
+            )
+        }
+
+        decision = evaluate_final_readiness(state, "enforce")
+
+        assert decision["decision"] == "block"
+        assert decision["action"] == "block"
+        assert decision["reasons"] == ["hard_safety_denial"]
+        assert decision["completion_contract"]["blocking_codes"] == [
+            "hard_safety_denial"
+        ]
+
+
+def test_unknown_safety_event_and_guard_boundaries_fail_closed():
+    cases = (
+        ("future_policy", "future_safety_guard"),
+        ("plan_mode_tool_not_allowed", "plan_mode_write_guard"),
+        ("write_scope_mismatch", "write_scope_guard"),
+        ("invalid_arguments", "path_escape"),
+        ("read_only_violation", "read_only_block"),
+    )
+    for reason, security_event in cases:
+        state = task_state()
+        state.evidence_summaries = {
+            "governance_summary": _governance_summary(
+                {
+                    "decision": "deny",
+                    "decision_type": "permission",
+                    "reason_code": reason,
+                    "security_event_type": security_event,
+                }
+            )
+        }
+
+        decision = evaluate_final_readiness(state, "enforce")
+
+        assert decision["decision"] == "block"
+        assert decision["reasons"] == ["hard_safety_denial"]
+
+
+def test_unknown_ordinary_tool_policy_denial_is_unclassified_and_blocks():
+    state = task_state()
+    state.evidence_summaries = {
+        "governance_summary": _governance_summary(
+            {
+                "decision": "deny",
+                "decision_type": "tool_policy",
+                "reason_code": "future_tool_policy_rule",
+                "security_event_type": "tool_policy",
+            }
+        )
+    }
+
+    decision = evaluate_final_readiness(state, "enforce")
+
+    assert decision["decision"] == "block"
+    assert decision["reasons"] == ["unclassified_policy_denial"]
+    summary = state.evidence_summaries["governance_summary"]
+    assert summary["unclassified_policy_denial_reasons"] == {
+        "future_tool_policy_rule": 1
+    }
+
+
+def test_runtime_secret_event_projects_to_permanent_hard_safety_summary():
+    summaries = update_evidence_summaries({}, {"event": "secret_exposure"})
+    state = task_state()
+    state.evidence_summaries = summaries
+
+    decision = evaluate_final_readiness(state, "enforce")
+
+    assert decision["decision"] == "block"
+    governance = summaries["governance_summary"]
+    assert governance["hard_safety_denial_reasons"] == {"secret_exposure": 1}
+
+
+def test_recoverable_denial_cannot_clear_an_earlier_hard_safety_denial():
+    state = task_state()
+    state.evidence_summaries = {
+        "governance_summary": _governance_summary(
+            {
+                "decision": "deny",
+                "decision_type": "permission",
+                "reason_code": "workspace_escape",
+                "security_event_type": "workspace_escape",
+            },
+            {
+                "decision": "deny",
+                "decision_type": "tool_repetition",
+                "reason_code": "repeated_identical_call",
+                "security_event_type": "",
+            },
+        )
+    }
+
+    decision = evaluate_final_readiness(state, "enforce")
+
+    assert decision["decision"] == "block"
+    assert decision["reasons"] == [
+        "hard_safety_denial",
+        "recoverable_policy_denial",
+    ]
+    summary = state.evidence_summaries["governance_summary"]
+    assert summary["hard_safety_denial_count"] == 1
+    assert summary["recoverable_policy_denial_count"] == 1

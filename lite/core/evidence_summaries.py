@@ -6,7 +6,11 @@ emitted during a run.
 """
 
 from .final_readiness import reduce_final_readiness_summary
-from .governance import reduce_governance_summary
+from .governance import (
+    HARD_SAFETY_DENIAL_REASONS,
+    HARD_SAFETY_EVENT_TYPES,
+    reduce_governance_summary,
+)
 from .context_budget_summary import (
     context_budget_summary,
     update_from_completion,
@@ -46,6 +50,31 @@ def update_evidence_summaries(summaries, event, changed_paths=None):
     elif event.get("event") == "tool_executed":
         summaries["verification_signal"] = reduce_verification_signal(
             summaries.get("verification_signal", {}), event, changed_paths or []
+        )
+        security_event = str(event.get("security_event_type", ""))
+        if (
+            security_event in HARD_SAFETY_EVENT_TYPES
+            and event.get("tool_status") != "rejected"
+        ):
+            summaries["governance_summary"] = reduce_governance_summary(
+                summaries.get("governance_summary", {}),
+                {
+                    "decision": "deny",
+                    "decision_type": "executed_safety_event",
+                    "reason_code": security_event,
+                    "security_event_type": security_event,
+                },
+            )
+    elif event.get("event") in HARD_SAFETY_DENIAL_REASONS:
+        event_name = str(event.get("event", ""))
+        summaries["governance_summary"] = reduce_governance_summary(
+            summaries.get("governance_summary", {}),
+            {
+                "decision": "deny",
+                "decision_type": "runtime_safety_event",
+                "reason_code": event_name,
+                "security_event_type": event_name,
+            },
         )
     elif event.get("event") == "final_readiness_decision":
         summaries["final_readiness_summary"] = reduce_final_readiness_summary(

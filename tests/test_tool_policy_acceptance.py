@@ -159,10 +159,13 @@ def test_tool_governance_decisions_are_run_trace_evidence(tmp_path):
         (agent.current_run_dir / "report.json").read_text(encoding="utf-8")
     )
     assert report["evidence_summaries"]["governance_summary"] == {
-        "schema_version": "lite.governance_summary.v1",
+        "schema_version": "lite.governance_summary.v2",
         "allow_count": 1,
         "deny_count": 2,
         "warn_count": 0,
+        "hard_safety_denial_count": 0,
+        "recoverable_policy_denial_count": 1,
+        "unclassified_policy_denial_count": 1,
         "decision_type_counts": {
             "tool_lookup": 1,
             "permission": 1,
@@ -174,6 +177,12 @@ def test_tool_governance_decisions_are_run_trace_evidence(tmp_path):
             "shell_search_should_use_tool": 1,
         },
         "last_denied_reason": "shell_search_should_use_tool",
+        "last_unclassified_policy_denial_reason": "unknown_tool",
+        "unclassified_policy_denial_reasons": {"unknown_tool": 1},
+        "last_recoverable_policy_denial_reason": "shell_search_should_use_tool",
+        "recoverable_policy_denial_reasons": {
+            "shell_search_should_use_tool": 1,
+        },
     }
 
 
