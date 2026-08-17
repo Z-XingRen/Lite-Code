@@ -1,232 +1,293 @@
 # Lite-Code
 
+**Lite-Code** 是一个运行在本地代码仓库中的终端 coding agent。它通过你配置的
+OpenAI-compatible 或 Anthropic-compatible 模型读取代码、搜索文件、执行命令、
+修改工作区，并将会话、事件和运行证据保存在本地。
 
-Lite-Code 是一个运行在本地仓库里的终端 coding agent。它使用你配置的模型
-provider 读取代码、搜索文件、执行命令、修改工作区，并把 session、事件和运行
-证据保存在本地。
-
-CLI 命令名是 lite，项目名是 Lite-Code。
+CLI 命令为 `lite`。默认界面是基于 Textual 的 TUI，同时支持普通 REPL 和一次性任务。
 
 <p align="center">
   <img src="assets/screenshots/lite-tui-intro.png" alt="Lite-Code terminal UI" width="960">
 </p>
 
-## 特性
+## 核心能力
 
 | 能力 | 说明 |
 | --- | --- |
-| 本地优先 | 在当前仓库上下文中工作，不依赖托管控制面。 |
-| 多 provider | 支持 OpenAI-compatible 和 Anthropic-compatible 协议。 |
-| 统一工具链 | 文件读取、搜索、shell、写入、patch、审批和子 agent 走同一套 runtime。 |
-| 可恢复 session | 保存对话、事件流、运行 trace 和报告，可以继续上次工作。 |
-| 记忆 | 通过 working memory、daily log 和 durable topics 沉淀项目上下文。 |
-| 安全控制 | 支持操作审批、shell sandbox 和敏感环境变量脱敏。 |
-| 可扩展 skills | 用 Markdown 定义 /review、/test 或项目自己的工作流。 |
+| 本地仓库工作流 | 围绕当前 workspace 读取、搜索、修改和验证代码，不依赖托管控制面。 |
+| 原生工具调用 | 支持 OpenAI-compatible 与 Anthropic-compatible 协议，工具参数统一经过本地 Schema 校验。 |
+| 可恢复运行时 | 使用 append-only Session Journal 记录会话和外部 effect，支持恢复、压缩、分支与回退。 |
+| 上下文治理 | 按预算组织 workspace、history、memory 和当前请求，并记录压缩与 prompt cache 决策。 |
+| 受控执行 | 提供风险操作审批、路径边界、敏感变量脱敏、验证回执和可选 shell sandbox。 |
+| 可观测性 | 为每次 session 和 run 写入事件流、trace、报告与工具结果 artifact。 |
+| 可扩展工作流 | 内置 plan、todo、memory 和 Markdown skills；多 agent 能力可通过实验开关启用。 |
 
 ## 快速开始
 
-要求：Python 3.10 或更高版本，以及至少一个可用的模型 API key。
+### 1. 安装
 
-~~~bash
+要求：Python 3.10 或更高版本、Git，以及至少一个可用的模型 API key。
+
+```bash
 git clone https://github.com/Z-XingRen/Lite-Code.git
 cd Lite-Code
-
 python -m venv .venv
+```
+
+激活虚拟环境：
+
+```bash
 # macOS / Linux
 source .venv/bin/activate
-# Windows PowerShell 使用：.venv\Scripts\Activate.ps1
+```
 
+```powershell
+# Windows PowerShell
+.\.venv\Scripts\Activate.ps1
+```
+
+安装 Lite-Code：
+
+```bash
 python -m pip install --upgrade pip
 python -m pip install -e .
-~~~
+```
 
-设置 API key 后启动：
+### 2. 配置 Provider
 
-~~~bash
+复制项目配置模板：
+
+```bash
 # macOS / Linux
-export OPENAI_API_KEY=sk-...
-
-# Windows PowerShell
-$env:OPENAI_API_KEY = "sk-..."
-
-lite
-~~~
-
-首次使用时，建议复制项目配置模板：
-
-~~~bash
 cp .lite.toml.example .lite.toml
-~~~
+```
 
-Windows PowerShell：
-
-~~~powershell
+```powershell
+# Windows PowerShell
 Copy-Item .lite.toml.example .lite.toml
-~~~
+```
 
-.lite.toml 默认被 Git 忽略。它适合保存 provider、协议、模型和 endpoint；
-API key 建议放在环境变量或 .env 中，不要提交到仓库。
+然后在 `.lite.toml` 中选择 provider。最小的 OpenAI-compatible 配置如下：
 
-
-## Provider 配置
-
-最小的 OpenAI-compatible 配置如下，把 your-model 换成实际模型名：
-
-~~~toml
+```toml
 provider = "openai"
 
 [providers.openai]
 protocol = "openai"
 base_url = "https://api.openai.com/v1"
 model = "your-model"
-~~~
+strict_tools = false
+```
 
-GPT-5.6 compatible endpoints that forward OpenAI's explicit prompt-cache
-fields can opt in independently of their URL:
+API key 推荐放在环境变量或仓库根目录的 `.env` 中，不要写入 TOML：
 
-~~~toml
-supports_explicit_prompt_cache = true
-~~~
+```dotenv
+OPENAI_API_KEY=sk-...
+```
 
-Leave this disabled for gateways that only implement automatic prompt caching.
-OpenAI-compatible conversations keep an append-only provider projection across
-turns, so automatic GPT-5.6 cache breakpoints can grow with the conversation
-instead of stopping at the static instruction prefix. The projection starts a
-new generation when the model, endpoint, tools, or canonical session history
-changes, and when the accumulated projection reaches its context budget.
-Workspace and other stable-context updates are appended as a newer snapshot so
-coding turns keep the existing cached prefix while the model receives current
-repository facts.
+`.lite.toml`、`.env` 和运行状态目录 `.lite/` 已被项目的 `.gitignore` 忽略。
 
-Anthropic-compatible endpoint 使用同样的结构，只需把 protocol 改为
-anthropic，并填写对应的 base_url 和模型。兼容 Anthropic 协议的其他 provider
-也可以使用 protocol = "anthropic"。
+### 3. 启动
 
-配置优先级：
+```bash
+lite
+```
 
-~~~text
+启动后可以直接输入任务，例如：
+
+```text
+分析当前测试失败的根因，修复后运行相关测试。
+```
+
+## Provider 配置
+
+Provider profile 的名称用于选择配置，真正决定请求格式的是 `protocol`。当前支持
+`openai` 和 `anthropic` 两种协议，因此兼容网关和第三方模型也可以接入。
+
+| Provider 示例 | `protocol` | 推荐 API key 变量 |
+| --- | --- | --- |
+| OpenAI-compatible | `openai` | `OPENAI_API_KEY` |
+| Anthropic-compatible | `anthropic` | `ANTHROPIC_API_KEY` |
+| DeepSeek Anthropic endpoint | `anthropic` | `DEEPSEEK_API_KEY` |
+
+Anthropic-compatible profile 示例：
+
+```toml
+provider = "anthropic"
+
+[providers.anthropic]
+protocol = "anthropic"
+base_url = "https://api.anthropic.com"
+model = "your-model"
+models = ["your-model"]
+reasoning_effort = "high"
+reasoning_efforts = ["low", "medium", "high"]
+strict_tools = false
+```
+
+`models` 和 `reasoning_efforts` 用于 TUI/REPL 中的 `/model` 选择器；`model` 和
+`reasoning_effort` 是启动时的默认值。
+
+普通配置的优先级为：
+
+```text
 CLI 参数 > 项目 .lite.toml > 全局 ~/.config/lite/config.toml > 环境变量/.env > 默认值
-~~~
+```
 
-常用环境变量：
+API key 单独按 `CLI > 环境变量/.env > TOML 兼容值` 解析。建议始终通过环境变量或
+`.env` 提供密钥。
 
-| 变量 | 用途 |
-| --- | --- |
-| OPENAI_API_KEY / OPENAI_BASE_URL / OPENAI_MODEL | OpenAI-compatible provider |
-| ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL / ANTHROPIC_MODEL | Anthropic-compatible provider |
-| DEEPSEEK_API_KEY / DEEPSEEK_BASE_URL / DEEPSEEK_MODEL | DeepSeek provider |
-| LITE_PROVIDER | 默认 provider profile |
-| LITE_API_KEY / LITE_BASE_URL / LITE_MODEL | 通用兼容 fallback |
+常见临时覆盖：
 
-临时覆盖配置：
-
-~~~bash
+```bash
 lite --provider openai --model your-model
-lite --provider deepseek --approval ask --max-steps 80
+lite --provider anthropic --reasoning-effort high
 lite --config /path/to/config.toml --cwd /path/to/repo
-~~~
+```
 
-完整配置说明见 [docs/configuration.md](docs/configuration.md)。
+完整字段、环境变量和默认值见 [配置文档](docs/configuration.md)。
+
+### Prompt Cache
+
+Lite-Code 会为 OpenAI-compatible 对话维护 append-only provider projection，使稳定的
+对话前缀可以跨 turn 复用。模型、endpoint、工具定义、规范会话历史或上下文代际变化时，
+runtime 会重新建立 projection；workspace 更新则以新快照追加，保留此前可缓存的前缀。
+
+只有确认网关支持并转发 OpenAI 显式 prompt-cache 字段时，才启用：
+
+```toml
+[providers.openai]
+supports_explicit_prompt_cache = true
+```
+
+仅支持自动缓存的 endpoint 应保持 `false`。每轮 projection 决策和 provider usage
+都会进入 run evidence，便于区分 cached、billable 与总输入 token。
 
 ## 运行方式
 
-~~~bash
-lite                              # 交互式终端默认启动 TUI
-lite --tui                        # 显式启动 Textual TUI
-lite --repl                       # 使用普通行式 REPL
-lite "找出测试失败的根因"          # 执行一次 one-shot 任务
-lite --prompt-file task.txt       # 从 UTF-8 文件读取一次性任务
-lite --resume latest              # 继续最近的 session
-lite --cwd /path/to/repo          # 指定工作目录
-~~~
+```bash
+lite                                  # 默认启动 TUI
+lite --tui                            # 显式启动 TUI
+lite --repl                           # 使用普通行式 REPL
+lite "修复这个仓库中的类型错误"        # 执行一次 one-shot 任务
+lite --prompt-file task.txt           # 从 UTF-8 文件读取一次性任务
+lite --resume latest                  # 恢复最近的 session
+lite --cwd /path/to/repo              # 指定工作目录
+```
 
 常用运行控制：
 
-~~~bash
-lite --approval ask               # 高风险操作前询问，默认策略
-lite --approval auto              # 自动批准操作
-lite --approval never             # 禁止交互式审批
-lite --sandbox best_effort        # 尽量使用 shell sandbox
-lite --sandbox required           # 没有可用 sandbox 时拒绝执行 shell
-lite --no-auto-dream              # 关闭后台 memory 整合
-lite --max-steps 80               # 限制一次请求的工具/模型迭代次数
-~~~
+```bash
+lite --approval ask                   # 风险操作前询问，默认值
+lite --approval auto                  # 自动批准风险操作
+lite --approval never                 # 拒绝风险操作
+lite --sandbox best_effort            # 尝试隔离，不可用时记录并回退
+lite --sandbox required               # 无可用隔离后端时拒绝 shell
+lite --final-readiness enforce        # 未满足完成条件时阻止直接结束
+lite --max-steps 80                   # 限制单次请求的模型/工具迭代
+```
 
-运行 lite --help 查看完整参数。sandbox 的详细边界和平台限制见
-[docs/sandbox.md](docs/sandbox.md)。
-
+运行 `lite --help` 查看完整 CLI 参数。
 
 ## 交互命令
 
-进入 TUI 或 REPL 后，可以输入自然语言，也可以使用 slash command：
-
-~~~text
-> /help
-> /model
-> /plan 重构 provider 配置加载逻辑
-> /review
-> /remember 这个项目使用 pytest
-> /dream
-~~~
-
-常用内置命令：
+TUI 和 REPL 都支持 slash command：
 
 | 命令 | 作用 |
 | --- | --- |
-| /help | 查看命令列表。 |
-| /model [name] | 选择模型和 reasoning effort，或直接切换模型。 |
-| /session | 查看当前 session 状态和文件路径。 |
-| /history / /resume <id\|latest> | 查看并恢复历史 session。 |
-| /context / /usage | 查看上下文使用量和 provider 使用元数据。 |
-| /memory / /working-memory | 查看 durable memory 和当前工作记忆。 |
-| /remember <text> | 写入一条 daily log 记忆。 |
-| /dream | 将 daily log 整理为 durable topics。 |
-| /plan <topic> | 创建并进入 plan mode。 |
-| /plan-exit | 退出 plan mode。 |
-| /agents | 查看子 agent 状态。 |
-| /compact | 压缩较早的 session 历史。 |
-| /tree | 查看 append-only Session Tree 和当前 head。 |
-| /branch <entry\|label> | 把会话 head 移到已有节点；下一条消息会形成分支。 |
-| /rewind [steps] | 将 head 回退若干节点，不修改工作区文件。 |
-| /label <name> | 给当前 head 添加稳定标签。 |
-| /clear | 创建新的空 session。 |
-| /exit | 退出 Lite-Code。 |
+| `/help` | 查看全部命令。 |
+| `/model [name]` | 选择模型与 reasoning effort，或按名称直接切换模型。 |
+| `/session`、`/history`、`/resume` | 查看、列出和恢复 session。 |
+| `/context`、`/usage` | 查看上下文预算和 provider usage。 |
+| `/plan <topic>`、`/plan-exit` | 进入或退出只允许写 plan artifact 的规划模式。 |
+| `/compact` | 压缩较早的会话上下文，原始 Journal 记录不会删除。 |
+| `/tree`、`/branch`、`/rewind`、`/label` | 浏览和移动 append-only Session Tree 的当前 head。 |
+| `/memory`、`/working-memory` | 查看 durable memory 索引和当前工作记忆。 |
+| `/remember <text>`、`/dream` | 写入 daily log，或手动整理 durable topics。 |
+| `/skills`、`/skill <name> [args]` | 查看并调用 Markdown skill。 |
+| `/clear`、`/reset` | 创建空 session，或重置当前 session 的历史与工作记忆。 |
+| `/exit` | 退出 Lite-Code。 |
 
-内置 skills 包含 /review、/test、/commit 和 /simplify。项目和用户也可以
-通过 Markdown 定义自己的 skill。详见 [docs/skills.md](docs/skills.md)。
+`/rewind` 和 `/branch` 只移动会话 head，不会回滚工作区文件。
 
-## 状态、记忆和证据
+## 安全模型
 
-Lite-Code 的运行状态默认写入工作区的 .lite/，该目录适合本地使用，不应提交：
+### 操作审批
+
+| 策略 | 行为 |
+| --- | --- |
+| `ask` | 只读工具直接执行，风险工具在执行前请求确认；默认值。 |
+| `auto` | 风险工具自动放行，并记录审批原因。 |
+| `never` | 只读工具仍可使用，风险工具直接拒绝。 |
+
+无论审批策略如何，工具 Schema、workspace 路径、write scope、patch 唯一匹配和敏感变量
+脱敏等检查都会执行。
+
+### Shell Sandbox
+
+Sandbox 默认是 `off`，需要显式启用：
+
+| 模式 | 行为 |
+| --- | --- |
+| `off` | 通过主机 shell 执行；sandbox 的网络和挂载策略不生效。 |
+| `best_effort` | 优先使用隔离后端；不可用时记录 `sandbox_unavailable` 并回退主机 shell。 |
+| `required` | 后端不可用或策略无法安全表达时拒绝执行。 |
+
+支持的后端包括 Linux `bubblewrap`、macOS `sandbox-exec`，以及跨平台的 Docker/Podman。
+Windows 当前没有原生 restricted-token 后端，`required` 模式需要可用的容器 daemon。
+启用 sandbox 后网络默认关闭；单条命令可以申请一次性的网络或额外目录权限，该申请仍受
+审批和 hard deny 约束。
+
+平台边界、配置项和已知限制见 [Sandbox 文档](docs/sandbox.md)。
+
+## Session、状态与证据
+
+Lite-Code 默认把本地状态写入仓库根目录的 `.lite/`：
 
 | 内容 | 默认路径 |
 | --- | --- |
-| 项目配置 | .lite.toml |
-| 全局配置 | ~/.config/lite/config.toml |
-| 旧 Session / 迁移源 | .lite/sessions/<id>.json |
-| 权威 Session Journal | .lite/sessions/<id>.journal.jsonl |
-| 事件流 | .lite/sessions/<id>.events.jsonl |
-| 运行证据 | .lite/runs/<run_id>/ |
-| Memory 索引 | .lite/memory/MEMORY.md |
-| Daily logs | .lite/memory/logs/YYYY/MM/YYYY-MM-DD.md |
-| Durable topics | .lite/memory/topics/*.md |
-| Plan artifacts | .lite/plans/ |
+| 项目配置 | `.lite.toml` |
+| 全局配置 | `~/.config/lite/config.toml` |
+| 权威 Session Journal | `.lite/sessions/<id>.journal.jsonl` |
+| 旧 Session / 迁移源 | `.lite/sessions/<id>.json` |
+| Session 事件流 | `.lite/sessions/<id>.events.jsonl` |
+| 单次运行证据 | `.lite/runs/<run_id>/` |
+| Working / durable memory | `.lite/memory/` |
+| Plan artifacts | `.lite/plans/` |
 
-记忆的工作方式和自动 dream 策略见 [docs/memory.md](docs/memory.md)。
-Journal 与 Session Tree 的记录格式、投影和恢复约束见
+Journal 采用“校验、持久化 append、推进内存投影”的顺序记录 provider、tool、permission
+等 effect。恢复时可以重放出 session、tree 和未完成 effect 状态；Session Tree 则在
+不复制另一份可变树文件的前提下提供分支、标签和 rewind。设计与 invariant 见
 [SESSION_TREE.md](SESSION_TREE.md)。
 
-## Skills
+每次 run 的目录包含 trace、report 和按需外置的大型工具结果。密钥值会在这些 artifact
+写盘前脱敏，但 `.lite/` 仍应只保留在本地，不应提交到版本库。
 
-Skill 是写在 Markdown 文件中的可复用工作流。加载顺序为：
+## Memory 与 Skills
 
-1. Lite 内置 skills
-2. 用户目录 ~/.lite/skills/<name>/SKILL.md
-3. 项目目录 skills/<name>/SKILL.md 或 .lite/skills/<name>/SKILL.md
+Working memory 默认启用，用于保存当前任务、最近文件和短摘要。`/remember` 会追加本地
+daily log，`/dream` 可以将日志整理为 durable topics。自动 dream 和 durable topic 检索
+属于 opt-in 实验能力，模板中的默认值均为 `false`：
 
-示例：
+```toml
+[experimental]
+multi_agent = false
+auto_dream = false
+durable_memory_retrieval = false
+```
 
-~~~markdown
+详细的目录结构、写入和检索规则见 [Memory 文档](docs/memory.md)。
+
+Skill 是 Markdown 定义的可复用工作流。Lite-Code 内置 `/review`、`/test`、`/commit`
+和 `/simplify`，并按以下顺序加载同名 skill，后者覆盖前者：
+
+1. Lite-Code 内置 skills
+2. `~/.lite/skills/<name>/SKILL.md`
+3. `<repo>/skills/<name>/SKILL.md` 或 `<repo>/.lite/skills/<name>/SKILL.md`
+
+最小示例：
+
+```markdown
 ---
 name: deploy
 description: 部署前检查
@@ -235,104 +296,83 @@ allowed-tools: read_file, search
 ---
 
 检查 $ARGUMENTS 环境的测试、配置和发布清单。
-~~~
+```
 
-调用：
+调用方式：
 
-~~~text
-> /deploy staging
+```text
+/deploy staging
+```
 
-~~~
+Frontmatter、参数替换、工具限制和 fork context 见 [Skills 文档](docs/skills.md)。
 
+## 开发与验证
 
-## 开发和测试
+推荐使用 [uv](https://docs.astral.sh/uv/) 同步锁定的开发环境：
 
-安装开发依赖后运行测试：
+```bash
+uv sync --group dev --locked
+uv run ruff check .
+uv run mypy
+uv run python -m pytest -q
+```
 
-~~~bash
+默认 pytest 配置不运行 stress 标记；长会话和扩展性门禁单独执行：
+
+```bash
+uv run python -m pytest -m stress -q
+```
+
+不使用 uv 时：
+
+```bash
 python -m pip install -e .
-python -m pip install pytest pytest-asyncio ruff
+python -m pip install pytest pytest-asyncio ruff mypy coverage
+python -m pytest -q
+```
 
-python -m pytest tests -q
-python -m ruff check lite tests
-~~~
+普通单元测试不依赖网络。真实 provider smoke 需要显式启用并提供有效 endpoint 与 key：
 
-使用 uv 时，可以直接同步项目声明的开发依赖：
-
-~~~bash
-uv sync --group dev
-uv run pytest tests -q
-~~~
-
-需要真实 provider 的 smoke test：
-
-~~~bash
+```bash
 LITE_LIVE_SMOKE=1 python -m pytest tests/test_release_smoke.py -q
-~~~
+```
 
-真实 provider 测试需要可用的 API key 和 endpoint；普通单元测试不应依赖网络。
+仓库还提供可复现的 runtime 与长会话验证入口：
 
-运行冻结的 100 事件 Compaction/Rewind/Resume 状态恢复基准：
-
-~~~powershell
-.\.venv\Scripts\python.exe scripts\run_long_session_state_benchmark.py --validate-only
-.\.venv\Scripts\python.exe scripts\run_long_session_state_benchmark.py
-~~~
-
-真实运行从 `.lite.toml` 读取 provider 和 model，固定 temperature 0，默认重复
-5 次。它分别评测完整历史、增量压缩历史和 Resume 恢复上下文，并输出任务正确率、
-20 题正确率、关键事实召回率、陈旧事实误用率，并将可比的 probe Token 与
-compaction/total/cached/billable Token 分开报告。压缩构建和最终探测使用独立的
-append-only cache lane，Resume 从磁盘 checkpoint 进入全新对话。中断后可加
-`--resume-existing` 复用 identity 一致的完整轮次。Provider 不可用时结果为
-`blocked`，不会把调用失败记成模型 0 分。
-冻结数据与人工复核说明见
-[`benchmarks/long_session_state_v1/README.md`](benchmarks/long_session_state_v1/README.md)。
-
-验证跨用户 turn 的 append-only prompt cache projection：
-
-~~~bash
+```bash
+python scripts/run_runtime_evidence.py --output-dir artifacts/runtime-evidence
+python scripts/run_long_session_state_benchmark.py --validate-only
 python scripts/run_prompt_cache_turn_harness.py --smoke
-python scripts/run_prompt_cache_turn_harness.py --output-dir artifacts/prompt-cache-turns-v1
-~~~
+```
 
-`--smoke` 固定只运行普通追加场景的两个变体，共 4 次 provider 调用，并写入
-独立 smoke 目录。正式命令固定运行普通追加、workspace refresh 和 session resume 三种双 turn
-场景，并以 full-prompt control 对照 append projection。结果同时记录运行时
-projection 决策、provider 实际 cached tokens、billable input tokens 和逐 turn
-run evidence；不完整矩阵或运行时/config identity 变化会被拒绝。
-
-采集 Workspace Change Tracker 与 Journal Effect 恢复证据：
-
-~~~bash
-python scripts/run_runtime_evidence.py --output-dir artifacts/runtime-evidence --workspace-file-counts 5000 --workspace-changed-counts 1 --workspace-runs 30 --recovery-repetitions 10
-~~~
-
-该命令执行透明工具的增量追踪/全量快照对照、6 类 Effect × 3
-个崩溃阶段的恢复矩阵，以及 1K/5K/10K Journal scaling，输出三个 JSON
-和 Markdown 摘要。实验完全使用本地确定性路径，不调用真实 provider；
-恢复矩阵默认保留 Journal fsync，scaling 关闭 fsync 以隔离在线投影成本。
+这些脚本分别覆盖 workspace/effect/journal 证据、冻结的长会话状态恢复数据，以及跨 turn
+prompt cache projection。涉及真实 provider 的运行会产生费用；具体参数和结论边界以脚本
+输出及 [Runtime 加固报告](docs/runtime-hardening-20260810.md) 为准。
 
 ## 项目结构
 
-~~~text
+```text
 lite/
 ├── cli.py                 # CLI 参数、启动模式和 REPL
-├── config/                # provider profile、TOML 和环境变量解析
-├── core/                  # runtime、engine、session、context 和 workers
-├── features/              # memory、skills 和 sandbox
-├── providers/             # OpenAI-compatible / Anthropic-compatible client
-├── tools/                 # 工具协议、注册表和具体工具
+├── commands/              # slash command 注册与解析
+├── config/                # Provider profile、TOML 和环境变量解析
+├── core/                  # Runtime、engine、session、context 和 workers
+├── features/              # Memory、skills 和 sandbox
+├── providers/             # OpenAI / Anthropic compatible client
+├── tools/                 # 工具 Schema、注册表和具体实现
 ├── tui/                   # Textual 终端界面
-└── evaluation/            # evidence、metrics 和评估辅助逻辑
-~~~
+└── evaluation/            # Evidence、metrics、benchmark 和 verifier
+```
 
-更多设计和运行说明：
+## 延伸阅读
 
 - [配置](docs/configuration.md)
+- [Shell Sandbox](docs/sandbox.md)
 - [Memory](docs/memory.md)
-- [Sandbox](docs/sandbox.md)
 - [Skills](docs/skills.md)
+- [Session Tree](SESSION_TREE.md)
+- [Runtime 优化与证据](docs/runtime-hardening-20260810.md)
+- [长会话状态基准](benchmarks/long_session_state_v1/README.md)
 
 ## License
 
