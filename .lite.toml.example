@@ -1,4 +1,4 @@
-provider = "deepseek"
+provider = "openai"
 
 [experimental]
 multi_agent = false

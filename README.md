@@ -82,7 +82,7 @@ strict_tools = false
 API key 推荐放在环境变量或仓库根目录的 `.env` 中，不要写入 TOML：
 
 ```dotenv
-OPENAI_API_KEY=sk-...
+LITE_OPENAI_API_KEY=sk-...
 ```
 
 `.lite.toml`、`.env` 和运行状态目录 `.lite/` 已被项目的 `.gitignore` 忽略。
@@ -334,7 +334,19 @@ python -m pytest -q
 普通单元测试不依赖网络。真实 provider smoke 需要显式启用并提供有效 endpoint 与 key：
 
 ```bash
+# macOS / Linux
 LITE_LIVE_SMOKE=1 python -m pytest tests/test_release_smoke.py -q
+```
+
+```powershell
+# Windows PowerShell
+$env:LITE_LIVE_SMOKE = "1"
+try {
+  python -m pytest tests/test_release_smoke.py -q
+}
+finally {
+  Remove-Item Env:LITE_LIVE_SMOKE
+}
 ```
 
 仓库还提供可复现的 runtime 与长会话验证入口：
@@ -346,8 +358,7 @@ python scripts/run_prompt_cache_turn_harness.py --smoke
 ```
 
 这些脚本分别覆盖 workspace/effect/journal 证据、冻结的长会话状态恢复数据，以及跨 turn
-prompt cache projection。涉及真实 provider 的运行会产生费用；具体参数和结论边界以脚本
-输出及 [Runtime 加固报告](docs/runtime-hardening-20260810.md) 为准。
+prompt cache projection。
 
 ## 项目结构
 
@@ -363,17 +374,3 @@ lite/
 ├── tui/                   # Textual 终端界面
 └── evaluation/            # Evidence、metrics、benchmark 和 verifier
 ```
-
-## 延伸阅读
-
-- [配置](docs/configuration.md)
-- [Shell Sandbox](docs/sandbox.md)
-- [Memory](docs/memory.md)
-- [Skills](docs/skills.md)
-- [Session Tree](SESSION_TREE.md)
-- [Runtime 优化与证据](docs/runtime-hardening-20260810.md)
-- [长会话状态基准](benchmarks/long_session_state_v1/README.md)
-
-## License
-
-MIT
